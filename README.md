@@ -9,7 +9,8 @@ with a human-in-the-loop review queue that continuously improves the underlying 
 > the real API is wired up and works as soon as credits are added. The system ships with a
 > `/api/ingest/mock` endpoint that runs the full pipeline on synthetic tweets so the entire
 > stack (pipeline → DB → dashboard → review queue → retrain) is demonstrable today.
-> **Rotate the key** in your twitterapi.io dashboard — it was shared in plaintext.
+> The dev key is in your local `.env` (gitignored) — override at runtime via
+> `TWITTER_API_KEY=...` or rotate it from the twitterapi.io dashboard.
 
 ---
 
