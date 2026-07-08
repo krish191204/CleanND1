@@ -5,12 +5,15 @@ Combines:
 - Propagation patterns (bot_score inverted + reverse-chronology novelty)
 - Source verification (verified flag + followers + age)
 - Cross-account corroboration (will be wired to burst-cluster later)
+- Known-news-handle boost (loaded from data/known_news_handles.json)
 
 Output: 0..1 score, mapped to CredibilityLevel bands.
 """
 from __future__ import annotations
 
-from typing import Iterable
+import json
+from pathlib import Path
+from typing import Iterable, Optional
 
 import numpy as np
 
@@ -38,21 +41,20 @@ class CredibilityScorer(Stage[CleanedTweet, ScoredTweet]):
         "who.int",
         "europa.eu",
     }
-    KNOWN_NEWS_HANDLES = {
+    # Fallback set used if data/known_news_handles.json is missing or the
+    # `known_news_handles_path` setting is empty. Keep this in sync with
+    # data/known_news_handles.json so a fresh checkout without the data
+    # directory still has a working baseline.
+    KNOWN_NEWS_HANDLES_FALLBACK = {
         # Tier-1 wire services & major outlets
-        "Reuters", "AP", "BBCBreaking", "BBCWorld", "nytimes", "washingtonpost",
-        "WSJ", "CNN", "CNBC", "FT", "TheEconomist", "Bloomberg", "Nature",
-        "ScienceMagazine", "WHO", "EUCommission", "BBCNews",
-        # Tech / AI (when they post news, not products)
-        "AnthropicAI", "OpenAI", "GoogleDeepMind", "NVIDIAAI", "googlegemma",
-        # Defense / geopolitics
-        "osinttechnical", "oryxspioenkop", "CaolanReports",
-        # Markets / finance (specialist analysts with track records)
-        "Hedgeye", "KobeissiLetter", "unusual_whales", "DeItaone",
+        "reuters", "ap", "bbcbreaking", "bbcworld", "nytimes", "washingtonpost",
+        "wsj", "cnn", "cnbc", "ft", "theeconomist", "bloomberg", "nature",
+        "sciencemagazine", "who", "eucommission", "bbcnews",
+        # Tech / AI
+        "anthropicai", "openai", "googledeepmind", "nvidiaai", "googlegemma",
+        "metaai",
         # Defense / gov
-        "ZelenskyyUa", "BorisJohnson",
-        # Note: NASA is intentionally NOT here — their 4th-of-July post isn't news.
-        # Real NASA news still passes via bot_score + engagement scoring.
+        "osinttechnical", "oryxspioenkop", "caolanreports",
     }
 
     def __init__(
@@ -60,16 +62,57 @@ class CredibilityScorer(Stage[CleanedTweet, ScoredTweet]):
         whitelist: Iterable[str] | None = None,
         blacklist: Iterable[str] | None = None,
         known_handles: Iterable[str] | None = None,
+        known_news_handles_path: Optional[str | Path] = None,
         reject_below: float = 0.20,
     ) -> None:
         super().__init__()
         settings = get_settings()
         self.whitelist = set(whitelist or self.DEFAULT_WHITELIST)
         self.blacklist = set(blacklist or self.DEFAULT_BLACKLIST)
-        self.known_handles = set(h or "" for h in (known_handles or self.KNOWN_NEWS_HANDLES))
+        # known_handles (explicit arg) wins over JSON over the in-code fallback
+        if known_handles is not None:
+            self.known_handles = {h.lower().lstrip("@") for h in known_handles if h}
+        else:
+            self.known_handles = self._load_known_news_handles(
+                known_news_handles_path
+                or settings.credibility_known_news_handles_path
+            )
         self.reject_below = reject_below
         self.high_t = settings.credibility_high_threshold
         self.medium_t = settings.credibility_medium_threshold
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _load_known_news_handles(path: str | Path) -> set[str]:
+        """Load the known-news-handles whitelist from JSON.
+
+        Returns the in-code fallback if the file is missing or malformed.
+        Supports two JSON shapes for backward compat:
+          - top-level list:           ["openai", "anthropicai", ...]
+          - categorised dict:         {"ai_orgs": [...], "researchers": [...], ...}
+        """
+        try:
+            p = Path(path)
+            if not p.exists():
+                return set(CredibilityScorer.KNOWN_NEWS_HANDLES_FALLBACK)
+            data = json.loads(p.read_text())
+        except Exception as e:  # pragma: no cover
+            import logging
+            logging.getLogger(__name__).warning(
+                f"[credibility] failed to read known-news-handles from {path}: {e}"
+            )
+            return set(CredibilityScorer.KNOWN_NEWS_HANDLES_FALLBACK)
+
+        handles: set[str] = set()
+        if isinstance(data, list):
+            handles.update(h.lower().lstrip("@") for h in data if h)
+        elif isinstance(data, dict):
+            for key, val in data.items():
+                if key.startswith("_"):
+                    continue  # comment / metadata
+                if isinstance(val, list):
+                    handles.update(h.lower().lstrip("@") for h in val if h)
+        return handles or set(CredibilityScorer.KNOWN_NEWS_HANDLES_FALLBACK)
 
     # ------------------------------------------------------------------
     def process(self, items: list[CleanedTweet]) -> StageResult[ScoredTweet]:
@@ -125,8 +168,8 @@ class CredibilityScorer(Stage[CleanedTweet, ScoredTweet]):
         if tw.author_verified:
             score += 0.15
             reasons.append("verified_account")
-        if tw.author_handle in self.known_handles:
-            score += 0.2
+        if tw.author_handle and tw.author_handle.lower().lstrip("@") in self.known_handles:
+            score += 0.3
             reasons.append("known_news_handle")
         if tw.author_followers >= 50_000:
             score += 0.05

@@ -1,0 +1,34 @@
+{
+  "_comment": "Authoritative sources whose tweets should surface even when other signals are mediocre. Lowercase, no @. The credibility scorer gives a +0.3 boost to any handle in this file. Edit freely — the scorer reloads on startup.",
+
+  "ai_orgs": [
+    "openai", "anthropicai", "googledeepmind", "metaai", "mistralai",
+    "huggingface", "nvidia", "cohere", "scale_ai", "perplexity_ai",
+    "runwayml", "stabilityai", "elevenlabsio", "cerebras",
+    "groqinc", "togethercompute", "fireworksai", "replicate",
+    "weights_biases", "deepmind", "xai", "aiaboratory", "salesforce",
+    "ibm", "oracle", "sap", "aiatmeta", "claudeai", "googlegemma",
+    "nvidiaai"
+  ],
+
+  "researchers": [
+    "ylecun", "karpathy", "sama", "drfeifei", "pmarca",
+    "demishassabis", "jeffclune", "jeremyphoward", "rasbt",
+    "chrmanning", "goodfellow_ian", "sirajraval", "andrewyn",
+    "susskind", "bengoertzel", "pabbeel", "nlpnoah",
+    "kelseyhightower", "jbeda", "jessfraz"
+  ],
+
+  "labs_media": [
+    "deeplearningai", "theneurondaily", "thegradientpub",
+    "bdtechtalks", "lexfridman", "theverge", "arstechnica",
+    "techcrunch", "wired", "pragmaticengineer", "bytebytego",
+    "systemdesignio", "simonw", "swyx"
+  ],
+
+  "wire_services": [
+    "reuters", "ap", "bbcbreaking", "bbcworld", "nytimes",
+    "washingtonpost", "wsj", "ft", "theeconomist", "bloomberg",
+    "cnbc", "nature", "sciencemagazine"
+  ]
+}

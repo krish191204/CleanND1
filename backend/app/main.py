@@ -31,7 +31,13 @@ async def lifespan(app: FastAPI):
     autoseed_task = None
     if settings.mock_auto_seed_enabled:
         autoseed_task = asyncio.create_task(_mock_autoseed_task())
-    background_tasks = [t for t in (push_task, autoseed_task) if t is not None]
+    # start the real-ingest poller (twitterapi.io) if enabled
+    real_ingest_task = None
+    if settings.real_ingest_enabled:
+        real_ingest_task = asyncio.create_task(_real_ingest_task())
+    background_tasks = [
+        t for t in (push_task, autoseed_task, real_ingest_task) if t is not None
+    ]
     try:
         yield
     finally:
@@ -114,6 +120,70 @@ async def _mock_autoseed_task() -> None:
         except Exception as e:  # pragma: no cover — defensive
             logger.warning(f"[autoseed] tick failed: {e}")
         await asyncio.sleep(s.mock_auto_seed_check_interval_seconds)
+
+
+async def _real_ingest_task() -> None:
+    """Continuous real-news ingestion.
+
+    Every `real_ingest_interval_seconds`, cycle through the queries in
+    `real_ingest_queries`, fetch the top results from twitterapi.io, run
+    them through the full pipeline, and persist surfaced + demoted items
+    to the DB. Push borderline items to the review queue.
+
+    This is the "always have real news in the feed" loop. The 9-stage
+    pipeline (Stage 0 software focus → ... → Stage 5 credibility) does
+    the noise filtering; we just keep feeding it.
+
+    Caveat: twitterapi.io charges per call. ~180 calls/hour at the
+    default cadence. Disable in production (REAL_INGEST_ENABLED=false)
+    unless you have a paid plan. Disable in tests via the test fixture.
+    """
+    from .api.routes import _ingest_real_to_db
+    from .services.twitter_client import TwitterAPIError
+
+    s = settings
+    await asyncio.sleep(s.real_ingest_initial_delay_seconds)
+
+    logger.info(
+        f"[real-ingest] enabled — interval={s.real_ingest_interval_seconds}s "
+        f"queries={s.real_ingest_queries} max/cycle={s.real_ingest_max_persist_per_cycle}"
+    )
+    while True:
+        try:
+            persisted = 0
+            for q in s.real_ingest_queries:
+                if persisted >= s.real_ingest_max_persist_per_cycle:
+                    logger.info(
+                        f"[real-ingest] hit per-cycle cap "
+                        f"({s.real_ingest_max_persist_per_cycle}) — stopping early"
+                    )
+                    break
+                try:
+                    n = await _ingest_real_to_db(
+                        query_or_beat=q,
+                        max_results=s.real_ingest_max_per_query,
+                    )
+                    persisted += n
+                    logger.info(
+                        f"[real-ingest] beat={q!r} persisted={n} "
+                        f"(cycle total={persisted})"
+                    )
+                except TwitterAPIError as e:
+                    # 402 / credits-exhausted / 5xx — log and stop the cycle
+                    logger.warning(
+                        f"[real-ingest] beat={q!r} failed: {e} — "
+                        f"{'backing off' if s.real_ingest_error_backoff else 'continuing'}"
+                    )
+                    if s.real_ingest_error_backoff:
+                        break
+                except Exception as e:  # pragma: no cover — defensive
+                    logger.warning(f"[real-ingest] beat={q!r} failed: {e}")
+            logger.info(f"[real-ingest] cycle done — total persisted={persisted}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # pragma: no cover — defensive
+            logger.warning(f"[real-ingest] cycle crashed: {e}")
+        await asyncio.sleep(s.real_ingest_interval_seconds)
 
 
 app = FastAPI(

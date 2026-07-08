@@ -66,7 +66,9 @@ class Pipeline:
         self.bot_detector = bot_detector or BotDetector()
         self.noise_filter = noise_filter or NoiseFilter(reject_threshold=s.noise_reject_threshold)
         self.relevance = relevance or RelevanceFilter()
-        self.credibility = credibility or CredibilityScorer()
+        self.credibility = credibility or CredibilityScorer(
+            known_news_handles_path=s.credibility_known_news_handles_path,
+        )
         self.software_focus = software_focus or SoftwareFocusFilter.from_settings(s)
         self.margin_threshold = margin_threshold if margin_threshold is not None else s.active_learning_margin_threshold
         self.review_batch_size = review_batch_size or s.review_queue_batch_size

@@ -30,6 +30,8 @@ def to_card(st: ScoredTweet, human_verified: bool = False) -> NewsCard:
         why.append("low_bot_probability")
     if any("verified" in r.lower() for r in st.credibility_reasons):
         why.append("verified_account")
+    if any("known_news_handle" in r for r in st.credibility_reasons):
+        why.append("known_news_handle")
     if any("whitelisted" in r.lower() for r in st.credibility_reasons):
         why.append("domain_whitelisted")
     if any("burst" in r.lower() for r in st.credibility_reasons):

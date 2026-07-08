@@ -17,6 +17,9 @@ def client(tmp_path_factory):
     # Disable the mock auto-seed background task so it doesn't run during
     # tests and pollute the DB / interfere with count assertions.
     os.environ["MOCK_AUTO_SEED_ENABLED"] = "false"
+    # Same for the real-ingest poller — otherwise it would hit twitterapi.io
+    # during tests, burn credits, and add non-deterministic rows.
+    os.environ["REAL_INGEST_ENABLED"] = "false"
     # also point at a fresh cache so the cached settings singleton doesn't leak
     from app.config import get_settings
     get_settings.cache_clear()

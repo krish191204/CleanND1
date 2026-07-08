@@ -192,14 +192,64 @@ def re_list(x):
     return []
 
 
-# Convenience helper: query templates for common news beats
-_WORLD_KEYWORDS = ["Russia", "Ukraine", "China", "EU", "NATO", "Israel"]
+# Convenience helper: query templates for common news beats.
+#
+# Each query combines:
+#   - multi-keyword topical ORs (catches product names, model releases,
+#     policy stories — single-word queries miss too much)
+#   - `lang:en` to keep the feed English-only by default
+#   - `min_faves:N` to drop low-engagement noise at the API layer
+#
+# NOTE on operators: twitterapi.io does NOT support the standard Twitter
+# `-filter:replies` or `-filter:retweets` operators (returns 0 results).
+# Only `lang:`, `min_faves:`, and `filter:verified` work. Reply/retweet
+# filtering happens downstream in Stage 2 (MinHash dedup) + Stage 3 (bot
+# detection). The pipeline has 9 more filtering layers downstream
+# (Stage 0 software focus, bot detection, noise filter, credibility,
+# surface floor, etc.) so these queries are deliberately generous —
+# the layers do the rest.
 NEWS_QUERIES = {
-    "breaking":      "breaking lang:en -filter:replies -filter:retweets",
-    "world":         "(breaking OR " + " OR ".join(_WORLD_KEYWORDS) + ") lang:en",
-    "tech":          '(AI OR "machine learning" OR OpenAI OR Anthropic OR NVIDIA) lang:en',
-    "finance":       "(stock OR market OR earnings OR IPO OR \"Federal Reserve\") lang:en",
-    "science":       "(study OR research OR discovery OR NASA OR WHO) lang:en",
+    "breaking": (
+        "(AI OR \"machine learning\" OR OpenAI OR Anthropic OR Meta OR Google "
+        "OR \"Claude\" OR \"GPT\" OR transformer OR \"Nvidia\" OR "
+        "\"deep learning\" OR PyTorch OR kubernetes) "
+        "lang:en min_faves:5"
+    ),
+    "world": (
+        "(China OR \"European Union\" OR Russia OR Ukraine OR Israel OR Taiwan "
+        "OR NATO OR \"United Nations\" OR sanctions OR election OR referendum) "
+        "lang:en min_faves:5"
+    ),
+    "tech": (
+        "(AI OR \"machine learning\" OR OpenAI OR Anthropic OR NVIDIA OR "
+        "PyTorch OR kubernetes OR rustlang OR React) "
+        "lang:en min_faves:5"
+    ),
+    "finance": (
+        "(earnings OR IPO OR \"Federal Reserve\" OR \"interest rate\" OR "
+        "\"stock market\" OR \"S&P\" OR Nasdaq OR inflation OR GDP OR "
+        "\"central bank\") "
+        "lang:en min_faves:5"
+    ),
+    "science": (
+        "(study OR research OR arxiv OR neurips OR \"peer reviewed\" OR "
+        "\"clinical trial\" OR Nature OR Science OR PNAS OR breakthrough) "
+        "lang:en min_faves:5"
+    ),
+    # New: catch AI/ML product releases + lab announcements.
+    "ai_news": (
+        "(OpenAI OR Anthropic OR \"Claude\" OR \"GPT\" OR \"Meta AI\" OR "
+        "\"Google DeepMind\" OR Mistral OR \"Hugging Face\" OR NVIDIA OR "
+        "PyTorch OR \"image generation\" OR \"video model\") "
+        "lang:en min_faves:3"
+    ),
+    # New: catch AI policy / regulation stories.
+    "ai_policy": (
+        "(regulation OR ban OR \"executive order\" OR \"AI safety\" OR "
+        "\"AI act\" OR \"white house\" OR congress OR parliament OR "
+        "\"EU AI\" OR \"export controls\") "
+        "lang:en min_faves:3"
+    ),
     "verified_only": "lang:en filter:verified",
 }
 

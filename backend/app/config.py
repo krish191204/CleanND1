@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     max_urls: int = 2
     credibility_high_threshold: float = 0.55
     credibility_medium_threshold: float = 0.35
+    credibility_known_news_handles_path: str = "./data/known_news_handles.json"
     # Default surface level — "medium" populates the demo feed with both
     # HIGH-credibility and MEDIUM-credibility items so the dashboard isn't
     # empty between mock-ingest ticks. Set to "high" for the strictest feed.
@@ -81,6 +82,27 @@ class Settings(BaseSettings):
     mock_auto_seed_check_interval_seconds: float = 60.0
     mock_auto_seed_batch_size: int = 15
     mock_auto_seed_initial_delay_seconds: float = 2.0  # let the API finish booting first
+
+    # ----- Real-ingest background poller -----
+    # When enabled, a background task polls twitterapi.io with the curated
+    # queries in `real_ingest_queries` and runs the results through the
+    # pipeline. Replaces the manual "click +15 mock" / "POST /api/ingest"
+    # flow with continuous real-news ingestion.
+    #
+    # CAVEAT: twitterapi.io charges per call. With 5 queries × every 10
+    # minutes × 25 tweets per query, that's ~180 calls/hour. Disable in
+    # production (REAL_INGEST_ENABLED=false) unless you have a paid plan.
+    real_ingest_enabled: bool = True
+    real_ingest_interval_seconds: float = 600.0       # 10 min — credit-conscious
+    real_ingest_initial_delay_seconds: float = 5.0
+    real_ingest_queries: list[str] = [
+        "ai_news", "ai_policy", "tech", "breaking", "science",
+    ]
+    real_ingest_max_per_query: int = 25
+    real_ingest_max_persist_per_cycle: int = 50      # flood guard
+    # On TwitterAPIError or credits-exhausted 402, skip the rest of this
+    # cycle and try again after one full interval (don't retry-storm).
+    real_ingest_error_backoff: bool = True
 
     # ----- Runtime -----
     environment: Literal["dev", "staging", "prod"] = "dev"

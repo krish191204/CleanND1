@@ -170,46 +170,71 @@ async def ingest(
     `poll=true` will start a background loop that re-runs every `poll_seconds`
     and pushes the latest results into the dashboard feed.
     """
-    if req.beat and not req.query:
-        from ..services.twitter_client import NEWS_QUERIES
-
-        query = NEWS_QUERIES.get(req.beat, req.beat)
-    elif req.query:
-        query = req.query
-    else:
+    if not req.beat and not req.query:
         raise HTTPException(400, "either `query` or `beat` must be provided")
 
-    client = TwitterClient()
+    # Run the real-ingest core (async, since the twitter client is async).
     try:
-        try:
-            raw = await client.search_tweets(query, max_results=req.max_results)
-        except Exception as e:
-            # surface API errors cleanly without breaking dev workflow
-            logger.warning(f"twitter api failed: {e}")
-            raise HTTPException(502, f"twitter client error: {e}") from e
-    finally:
-        await client.close()
-    client = TwitterClient()
-    try:
-        if req.beat and not req.query:
-            from ..services.twitter_client import NEWS_QUERIES
-
-            query = NEWS_QUERIES.get(req.beat, req.beat)
-        elif req.query:
-            query = req.query
-        else:
-            raise HTTPException(400, "either `query` or `beat` must be provided")
-        raw = await client.search_tweets(query, max_results=req.max_results)
+        n_persisted = await _ingest_real_to_db(
+            query_or_beat=req.query or req.beat,
+            max_results=req.max_results,
+        )
     except Exception as e:
-        raise HTTPException(502, f"twitter client error: {e}")
+        logger.warning(f"twitter api failed: {e}")
+        raise HTTPException(502, f"twitter client error: {e}") from e
+
+    query = req.query or _resolve_beat(req.beat)
+
+    if req.poll:
+        background.add_task(_poll_loop, query, req.poll_seconds, req.max_results)
+
+    return IngestResponse(
+        job_id=datetime.utcnow().isoformat(),
+        query=query,
+        fetched=n_persisted,  # rough — surfaced+demoted only
+        surfaced=n_persisted,
+        review_queue=0,
+        stats=PipelineStats(),  # empty; full stats live in the DB log
+    )
+
+
+# ---------------------------------------------------------------------
+# Real-ingest core (synchronous; called by both the HTTP endpoint and the
+# background real_ingest task in app/main.py)
+# ---------------------------------------------------------------------
+
+def _resolve_beat(beat: str) -> str:
+    """Map a beat name to its NEWS_QUERIES string. Falls back to the beat
+    as a raw query if no preset matches."""
+    from ..services.twitter_client import NEWS_QUERIES
+
+    return NEWS_QUERIES.get(beat, beat)
+
+
+async def _ingest_real_to_db(query_or_beat: str, max_results: int = 25) -> int:
+    """Run one real-ingest pass: API call → pipeline → DB upsert.
+
+    Async because the twitter client is async. Called by both the HTTP
+    endpoint and the background real_ingest task in app/main.py.
+
+    Returns the number of items persisted (surfaced + demoted). Raises
+    TwitterAPIError on API failure so the caller can decide whether
+    to back off.
+    """
+    query = _resolve_beat(query_or_beat)
+
+    client = TwitterClient()
+    try:
+        raw = await client.search_tweets(query, max_results=max_results)
     finally:
         await client.close()
 
     pipe = Pipeline()
     out = pipe.run(raw)
 
-    # persist both surfaced (above floor) and demoted (below floor) items so the
-    # review queue + future retraining can see them.
+    # Persist surfaced + demoted so the feed / review queue / retraining
+    # loop see every tweet that made it through the pipeline. Same pattern
+    # as _run_mock_ingest.
     database = db()
     to_persist = list(out.surfaced) + list(getattr(out, "demoted", []))
     for st in to_persist:
@@ -243,17 +268,7 @@ async def ingest(
     if out.review_queue:
         review_queue().push(out.review_queue)
 
-    if req.poll:
-        background.add_task(_poll_loop, query, req.poll_seconds, req.max_results)
-
-    return IngestResponse(
-        job_id=datetime.utcnow().isoformat(),
-        query=query,
-        fetched=len(raw),
-        surfaced=len(out.surfaced),
-        review_queue=len(out.review_queue),
-        stats=out.stats,
-    )
+    return len(to_persist)
 
 
 # ---------------------------------------------------------------------
