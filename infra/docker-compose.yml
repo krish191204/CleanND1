@@ -1,0 +1,67 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: ../backend
+      dockerfile: ../infra/Dockerfile.backend
+    image: cleannd/backend:latest
+    env_file: ../.env
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    volumes:
+      - ../ml/artifacts:/app/ml/artifacts
+    command: >
+      bash -c "
+        python -m scripts.train_initial_model &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000
+      "
+    restart: unless-stopped
+
+  celery-worker:
+    image: cleannd/backend:latest
+    env_file: ../.env
+    depends_on:
+      - backend
+      - redis
+    command: celery -A app.ml.celery_app.celery_app worker --loglevel=info
+    volumes:
+      - ../ml/artifacts:/app/ml/artifacts
+    restart: unless-stopped
+
+  celery-beat:
+    image: cleannd/backend:latest
+    env_file: ../.env
+    depends_on:
+      - backend
+      - redis
+    command: celery -A app.ml.celery_app.celery_app beat --loglevel=info
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: cleannd
+      POSTGRES_PASSWORD: cleannd
+      POSTGRES_DB: cleannd
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "cleannd"]
+      interval: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 5
+
+volumes:
+  pgdata: {}

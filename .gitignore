@@ -1,0 +1,39 @@
+# Environment
+.env
+.env.local
+*.env.local
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Node
+node_modules/
+.next/
+out/
+
+# ML — model artifacts are derived from training scripts, not source
+*.joblib
+*.pt
+*.bin
+*.safetensors
+models/checkpoints/
+mlruns/
+ml/artifacts/
+
+# Data
+data/raw/
+data/processed/
+*.db
+*.sqlite
+*.sqlite3
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tooling state (Claude Code, IDEs, etc.)
+.claude/
+.idea/
+.vscode/
+*.swp

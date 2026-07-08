@@ -1,0 +1,82 @@
+{
+  "_comment": "Curated accounts for the broader software sphere (AI/ML + programming languages, frameworks, tools, companies). Lowercase handles. Edit freely — the SoftwareFocusFilter reloads on startup.",
+  "_researchers_ai_ml": [
+    "ylecun", "karpathy", "andrewyn", "sirajraval", "jeffrey_dean", "susskind",
+    "goodfellow_ian", "bengoertzel", "drfeifei", "pabbeel", "nlpnoah",
+    "chrmanning", "pmarca", "demishassabis", "jeffclune", "hardmaru",
+    "rasbt", "jeremyphoward", "rondogfly", "koppgabor", "aiaboratory",
+    "openreviewnet", "arankomatsuzaki", "rasmuskleis"
+  ],
+  "_researchers_programming": [
+    "rich_harris", "evan_you", "yyx990803", "sindresorhus", "addyosmani",
+    "wesbos", "mjackson", "kentcdodds", "dan_abramov", "sebmarkbage",
+    "tj", "guido", "gvanrossum", "dabeaz", "raymondh",
+    "bdfl", "jose_valim", "matz", "tenderlove", "antirez",
+    "mitchellh", "kelseyhightower", "jbeda", "jessfraz", "solomonstre",
+    "tldraw", "antirez", "janl", "mxstbr", "swyx"
+  ],
+  "researchers": [
+    "ylecun", "karpathy", "andrewyn", "sirajraval", "jeffrey_dean", "susskind",
+    "goodfellow_ian", "bengoertzel", "drfeifei", "pabbeel", "nlpnoah",
+    "chrmanning", "pmarca", "demishassabis", "jeffclune", "hardmaru",
+    "rasbt", "jeremyphoward", "rondogfly", "koppgabor",
+    "rich_harris", "evan_you", "yyx990803", "sindresorhus", "addyosmani",
+    "wesbos", "mjackson", "kentcdodds", "dan_abramov", "sebmarkbage",
+    "guido", "gvanrossum", "raymondh", "jose_valim", "tenderlove",
+    "kelseyhightower", "jbeda", "jessfraz"
+  ],
+  "practitioners": [
+    "fchollet", "balavenkatesan", "jerryjliu", "hwchase17", "simonw",
+    "jxmnop", "mitchellh", "osanseviero", "rasbt", "indigox",
+    "rcaldas", "math_rachel", "lmoroney",
+    "tj", "addyosmani", "mjackson", "kentcdodds",
+    "swyx", "mxstbr", "tannerlinsley", "evan_you", "sindresorhus",
+    "iamdevloper", "tholman", "sdras", "wesbos",
+    "kettanaito", "mxschmidt", "mohammadalashkar"
+  ],
+  "organizations": [
+    "openai", "anthropicai", "googledeepmind", "huggingface",
+    "metaai", "nvidia", "deepmind", "mlopscommunity",
+    "weights_biases", "mlfoundations",
+    "cohere", "mistralai", "scale_ai", "replicate",
+    "runwayml", "midjourney", "stabilityai", "elevenlabsio",
+    "perplexity_ai", "cursor_ai", "groqinc", "togethercompute",
+    "fireworksai", "databricks", "kaggle",
+    "github", "gitlab", "microsoft", "apple", "google",
+    "meta", "amazon", "oracle", "ibm", "sap",
+    "salesforce", "atlassian", "slack", "stripe", "shopify",
+    "spotify", "netflix", "uber", "airbnb", "dropbox",
+    "figma", "notionhq", "linear", "vercel",
+    "denoland", "rustlang", "golang", "pythonlang",
+    "javascript", "typescript", "nodejs",
+    "reactjs", "vuejs", "angular", "sveltejs",
+    "nextjs", "nuxt_js",
+    "docker", "kubernetesio", "cncfio",
+    "elastic", "mongodb", "redisinc", "postgresql",
+    "supabase", "planetscale", "prisma", "trpc_io",
+    "tailwindcss", "vite_js", "webpack",
+    "replit", "stackblitz", "codepen",
+    "anthropic", "claudeai", "openai"
+  ],
+  "papers": [
+    "arxiv", "paperswithcode", "neuripsconf", "icml_conf", "cvpr",
+    "iclr_conf", "aaai_org", "aclmeeting", "aclanthology", "distillpub"
+  ],
+  "media": [
+    "towards_ai", "bdtechtalks", "lexfridman", "yannlecun",
+    "thegradientpub", "deeplearningai", "theneurondaily",
+    "therundownai", "bensbitesdaily",
+    "theverge", "verge", "arstechnica", "techcrunch",
+    "wired", "hackernewsfeed", "hnaborama",
+    "github", "gitlab", "changelog",
+    "javascriptdaily", "reactdaily", "webdev_news",
+    "dbaborama", "engineeringaborama",
+    "pragmaticengineer", "bytebytego", "systemdesignio"
+  ],
+  "engineering_voices": [
+    "patkua", "mikeisaac", "davechen", "dannypostmaa",
+    "antirez", "rich_harris", "tjholowaychuk",
+    "dabit3", "kentcdodds", "wesbos", "leerob",
+    "rauchg", "evilrabbit", "mxstbr", "liamosaur"
+  ]
+}
