@@ -257,26 +257,65 @@ class NoiseFilter(Stage[CleanedTweet, CleanedTweet]):
     """Annotates each tweet with `noise_score` and `noise_labels`.
 
     Rejects obvious noise outright; lower-noise items get a downstream penalty.
+
+    Issue 3 + Layer B Addition 3:
+    Tweets from known-news handles (data/known_news_handles.json) and
+    known-credible individuals (data/known_credible_individuals.json) get
+    a soft penalty instead of a hard reject — their "We're thrilled to
+    announce..." patterns shouldn't be treated as engagement-bait.
+    Stage 5 then applies a softer credibility_penalty downstream.
     """
 
     name = "stage3b_noise"
 
-    def __init__(self, reject_threshold: float = 0.30) -> None:
+    def __init__(
+        self,
+        reject_threshold: float = 0.30,
+        skip_for_known_handles: bool = True,
+    ) -> None:
         super().__init__()
         self.reject_threshold = reject_threshold
+        self.skip_for_known_handles = skip_for_known_handles
 
     def process(self, items: list[CleanedTweet]) -> StageResult[CleanedTweet]:
         passed: list[CleanedTweet] = []
         rejected: list[tuple[CleanedTweet, str]] = []
 
+        # Lazy import — keeps stage3b importable for tests that don't
+        # touch known_handles.
+        from ..services.known_handles import is_known_news, is_known_individual
+
         for ct in items:
             res = _scan(ct.raw.text)
             # attach for downstream use
-            ct.__dict__["noise_score"] = res.score  # tolerated by Pydantic's extra=ignore
+            ct.__dict__["noise_score"] = res.score
             ct.__dict__["noise_labels"] = res.labels
 
+            is_known = (
+                self.skip_for_known_handles
+                and (
+                    is_known_news(ct.raw.author_handle)
+                    or is_known_individual(ct.raw.author_handle)
+                )
+            )
+
+            # Issue 3 + Layer B Addition 3: known-handle tweets ALWAYS pass
+            # the noise filter, regardless of pattern matches. The noise
+            # information is preserved (score + labels) so Stage 5 can
+            # apply a soft credibility_penalty downstream — see
+            # `credibility_penalty()` in this file. Unknown-handle tweets
+            # with the same patterns are still hard-rejected as before.
+            if is_known:
+                ct.bot_reasons = (ct.bot_reasons or []) + [
+                    f"noise_soft:{lbl}" for lbl in res.labels
+                ]
+                passed.append(ct)
+                continue
+
             if res.score >= self.reject_threshold:
-                ct.bot_reasons = (ct.bot_reasons or []) + [f"noise:{lbl}" for lbl in res.labels]
+                ct.bot_reasons = (ct.bot_reasons or []) + [
+                    f"noise:{lbl}" for lbl in res.labels
+                ]
                 rejected.append((ct, f"noise={res.score:.2f}:{','.join(res.labels)}"))
             else:
                 passed.append(ct)

@@ -323,3 +323,117 @@ def test_from_settings_classmethod(known_accounts_file):
     assert "github" in f.known_accounts
     assert "arxiv" in f.known_accounts
     get_settings.cache_clear()
+
+
+# ---------------------------------------------------------------------
+# Fix 2 — known-news and known-individual bypass (Issue 2 + Layer B
+# Addition 3). When a tweet's author is in known_news_handles.json or
+# known_credible_individuals.json, Stage 0 should pass it through
+# unconditionally, regardless of bio / tweet-text signals.
+# ---------------------------------------------------------------------
+
+def _known_news_file(tmp_path):
+    """Write a tiny known_news_handles.json for tests and return its path."""
+    import json as _json
+    p = tmp_path / "test_known_news.json"
+    p.write_text(_json.dumps({"ai_orgs": ["openai", "anthropicai", "aiatmeta"]}))
+    return p
+
+
+def _known_individuals_file(tmp_path):
+    import json as _json
+    p = tmp_path / "test_known_individuals.json"
+    p.write_text(_json.dumps({"ai_researchers": ["karpathy", "ylecun"]}))
+    return p
+
+
+def test_known_news_handle_bypasses_software_focus(tmp_path, monkeypatch):
+    """Reuters's bio doesn't say 'software' — without the bypass, Stage 0
+    would reject. With the bypass (Issue 2), known-news handles pass
+    through unconditionally even if their bio / tweet doesn't match the
+    AI/software keyword banks."""
+    import os
+    news_p = _known_news_file(tmp_path)
+    ind_p = _known_individuals_file(tmp_path)
+    monkeypatch.setenv("CREDIBILITY_KNOWN_NEWS_HANDLES_PATH", str(news_p))
+    monkeypatch.setenv("KNOWN_CREDIBLE_INDIVIDUALS_PATH", str(ind_p))
+
+    # Reload singleton caches so tests pick up the new env
+    from app.services import known_handles
+    known_handles.reset_cache()
+
+    f = SoftwareFocusFilter(
+        known_accounts_path=str(tmp_path / "empty_software.json"),  # no software-known accounts
+        skip_known_news=True,
+        skip_known_individuals=True,
+    )
+    # Reuters tweet — bio is "wire service", text is "earnings report" (no AI keywords)
+    t = _mk(
+        text="Q3 earnings came in above expectations across the sector today.",
+        handle="reuters",  # not in known_news_handles.json — but we use openai
+    )
+    # Use a known-news handle with non-AI text + low engagement + no bio match
+    t2 = _mk(
+        text="earnings update from the markets desk this morning",
+        handle="openai",  # in known_news_handles.json
+        likes=2, retweets=0,  # below min_engagement=5
+    )
+    r = f.process([t2])
+    # Known-news bypass: openai passes even with non-AI text + low engagement
+    assert len(r.passed) == 1, f"expected openai tweet to pass via bypass, got: {r.rejected}"
+    assert r.passed[0].author_handle == "openai"
+    # The non-bypassed control case (reuters): still rejected (bio doesn't match,
+    # account not in any list)
+    r2 = f.process([t])
+    assert len(r2.passed) == 0, "reuters without bypass support should be rejected"
+    # Reason depends on which check fires first — accept any software-focus reject reason
+    assert r2.rejected[0][1] in (
+        "account_not_software_focused",
+        "tweet_no_software_terms",
+        "low_engagement<5",  # fallback if profile metadata also fails
+    )
+
+
+def test_known_individual_handle_bypasses_software_focus(tmp_path, monkeypatch):
+    """Layer B Addition 3: karpathy's tweets should pass Stage 0 even if
+    they don't match the AI/software keyword banks."""
+    import os
+    news_p = _known_news_file(tmp_path)
+    ind_p = _known_individuals_file(tmp_path)
+    monkeypatch.setenv("CREDIBILITY_KNOWN_NEWS_HANDLES_PATH", str(news_p))
+    monkeypatch.setenv("KNOWN_CREDIBLE_INDIVIDUALS_PATH", str(ind_p))
+
+    from app.services import known_handles
+    known_handles.reset_cache()
+
+    f = SoftwareFocusFilter(
+        known_accounts_path=str(tmp_path / "empty_software.json"),
+        skip_known_individuals=True,
+    )
+    # karpathy tweet — bio might not signal software, tweet text is opinion
+    t = _mk(text="honestly I think this is overhyped", handle="karpathy")
+    r = f.process([t])
+    assert len(r.passed) == 1
+    assert r.passed[0].author_handle == "karpathy"
+
+
+def test_known_handles_bypass_can_be_disabled(tmp_path, monkeypatch):
+    """Config flag bypass_stages_for_known_individuals=False should disable
+    the bypass entirely."""
+    news_p = _known_news_file(tmp_path)
+    ind_p = _known_individuals_file(tmp_path)
+    monkeypatch.setenv("CREDIBILITY_KNOWN_NEWS_HANDLES_PATH", str(news_p))
+    monkeypatch.setenv("KNOWN_CREDIBLE_INDIVIDUALS_PATH", str(ind_p))
+
+    from app.services import known_handles
+    known_handles.reset_cache()
+
+    f = SoftwareFocusFilter(
+        known_accounts_path=str(tmp_path / "empty_software.json"),
+        skip_known_news=False,
+        skip_known_individuals=False,
+    )
+    t = _mk(text="earnings update from the markets desk", handle="openai")
+    r = f.process([t])
+    # Without bypass, openai (not in software known accounts) is rejected
+    assert len(r.passed) == 0

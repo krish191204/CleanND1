@@ -47,7 +47,30 @@ class Database:
         )
 
     def init(self) -> None:
-        Base.metadata.create_all(self.engine)
+        Base.metadata.create_all(self.engine)   # creates `topics` table; idempotent for existing
+        # Layer B Addition 1: ALTER TABLE for the new columns on existing
+        # `tweets` rows. SQLite doesn't add new columns to existing tables
+        # via metadata.create_all, so we run explicit ALTER TABLE migrations
+        # guarded by a PRAGMA check (column-existence). Safe to re-run.
+        try:
+            with self.engine.begin() as conn:
+                cols = {row[1] for row in conn.exec_driver_sql(
+                    "PRAGMA table_info(tweets)"
+                ).fetchall()}
+                if "topic_id" not in cols:
+                    conn.exec_driver_sql(
+                        "ALTER TABLE tweets ADD COLUMN topic_id VARCHAR(36)"
+                    )
+                if "tweet_type" not in cols:
+                    conn.exec_driver_sql(
+                        "ALTER TABLE tweets ADD COLUMN tweet_type VARCHAR(16) DEFAULT 'unknown'"
+                    )
+                # Index on topic_id for fast topic-detail queries
+                conn.exec_driver_sql(
+                    "CREATE INDEX IF NOT EXISTS ix_tweets_topic_id ON tweets(topic_id)"
+                )
+        except Exception as e:
+            logger.warning(f"topic_id / tweet_type migration skipped: {e}")
         logger.info(f"db initialized at {self.url}")
 
     @contextmanager
@@ -87,6 +110,10 @@ class Database:
             orm.software_focus_passed = bool(t.get("software_focus_passed", True))
             orm.software_focus_meta = list(t.get("software_focus_meta") or [])
             orm.embedding = t.get("embedding")
+            # Layer B Addition 1 + 4 — populate topic_id + tweet_type from
+            # the topic_grouper_wrapper if they're set on the upsert dict.
+            orm.topic_id = t.get("topic_id", orm.topic_id)
+            orm.tweet_type = t.get("tweet_type", orm.tweet_type) or "unknown"
             orm.payload = t.get("payload", {})
 
     def get_surfaced(
@@ -113,6 +140,133 @@ class Database:
         with self.session() as s:
             orm = s.get(TweetORM, tweet_id)
             return self._serialize_tweet(orm) if orm else None
+
+    # ----- Topics (Layer B Addition 1) -----
+
+    def upsert_topic(self, t: dict) -> str:
+        """Insert or update a Topic row by `id`. Returns the topic id."""
+        from ..models.db_models import TopicORM
+        with self.session() as s:
+            orm = s.get(TopicORM, t["id"])
+            if orm is None:
+                orm = TopicORM(id=t["id"])
+                s.add(orm)
+            orm.label = t.get("label", orm.label or "")
+            orm.anchor_tweet_id = t.get("anchor_tweet_id", orm.anchor_tweet_id)
+            # last_activity_at + tweet_count recomputed from tweet assignments
+            if "last_activity_at" in t:
+                orm.last_activity_at = t["last_activity_at"]
+            if "tweet_count" in t:
+                orm.tweet_count = t["tweet_count"]
+            if "first_seen_at" in t and orm.first_seen_at is None:
+                orm.first_seen_at = t["first_seen_at"]
+            if "extras" in t:
+                orm.extras = t["extras"]
+            if "last_expansion_at" in t:
+                orm.last_expansion_at = t["last_expansion_at"]
+            return orm.id
+
+    def link_tweet_to_topic(self, tweet_id: str, topic_id: Optional[str]) -> None:
+        """Set a tweet's topic_id (or NULL to unlink)."""
+        with self.session() as s:
+            orm = s.get(TweetORM, tweet_id)
+            if orm is not None:
+                orm.topic_id = topic_id
+
+    def get_topics(self, limit: int = 50) -> list[dict]:
+        """Topical clusters, newest activity first. Each entry mirrors the
+        TopicORM row plus a tweet_type_breakdown summary."""
+        from ..models.db_models import TopicORM
+        with self.session() as s:
+            stmt = (
+                select(TopicORM)
+                .order_by(TopicORM.last_activity_at.desc())
+                .limit(limit)
+            )
+            topics = list(s.execute(stmt).scalars())
+            # Attach a tweet_type_breakdown per topic via a single grouped query
+            from sqlalchemy import func as sa_func
+            type_counts = dict(
+                s.execute(
+                    select(TweetORM.topic_id, TweetORM.tweet_type, sa_func.count())
+                    .where(TweetORM.topic_id.is_not(None))
+                    .where(TweetORM.passed_all_stages.is_(True))
+                    .group_by(TweetORM.topic_id, TweetORM.tweet_type)
+                ).all()
+            )
+            result = []
+            for t in topics:
+                breakdown: dict[str, int] = {}
+                key = t.id
+                for (tid, ttype, count) in (
+                    (k, v, type_counts[(k, v)])
+                    for k, v in type_counts.keys()
+                    if k == key
+                ):
+                    breakdown[ttype] = breakdown.get(ttype, 0) + count
+                result.append({
+                    "id": t.id,
+                    "label": t.label,
+                    "anchor_tweet_id": t.anchor_tweet_id,
+                    "tweet_count": t.tweet_count,
+                    "first_seen_at": t.first_seen_at.isoformat() if t.first_seen_at else None,
+                    "last_activity_at": t.last_activity_at.isoformat() if t.last_activity_at else None,
+                    "last_expansion_at": t.last_expansion_at.isoformat() if t.last_expansion_at else None,
+                    "tweet_type_breakdown": breakdown,
+                })
+            return result
+
+    def get_topic(self, topic_id: str) -> Optional[dict]:
+        """Single topic summary by id."""
+        from ..models.db_models import TopicORM
+        with self.session() as s:
+            t = s.get(TopicORM, topic_id)
+            if t is None:
+                return None
+            return {
+                "id": t.id,
+                "label": t.label,
+                "anchor_tweet_id": t.anchor_tweet_id,
+                "tweet_count": t.tweet_count,
+                "first_seen_at": t.first_seen_at.isoformat() if t.first_seen_at else None,
+                "last_activity_at": t.last_activity_at.isoformat() if t.last_activity_at else None,
+                "last_expansion_at": t.last_expansion_at.isoformat() if t.last_expansion_at else None,
+                "extras": t.extras,
+            }
+
+    def get_topic_tweets(
+        self,
+        topic_id: str,
+        tweet_type: Optional[str] = None,
+    ) -> list[dict]:
+        """All passed tweets in a topic, sorted by final_score desc.
+        Optional `tweet_type` filter (e.g. 'opinion', 'announcement')."""
+        with self.session() as s:
+            stmt = (
+                select(TweetORM)
+                .where(TweetORM.topic_id == topic_id)
+                .where(TweetORM.passed_all_stages.is_(True))
+                .order_by(TweetORM.final_score.desc())
+            )
+            if tweet_type:
+                stmt = stmt.where(TweetORM.tweet_type == tweet_type)
+            return [self._serialize_tweet(orm) for orm in s.execute(stmt).scalars()]
+
+    def record_topic_expansion(self, topic_id: str) -> None:
+        """Stamp last_expansion_at = now (used for the reactive cooldown)."""
+        from datetime import datetime, timezone
+        from ..models.db_models import TopicORM
+        with self.session() as s:
+            t = s.get(TopicORM, topic_id)
+            if t is not None:
+                t.last_expansion_at = datetime.now(timezone.utc)
+
+    def set_tweet_type(self, tweet_id: str, tweet_type: str) -> None:
+        """Persist the TweetType classification."""
+        with self.session() as s:
+            orm = s.get(TweetORM, tweet_id)
+            if orm is not None:
+                orm.tweet_type = tweet_type
 
     @staticmethod
     def _serialize_tweet(orm: "TweetORM") -> dict:
@@ -149,6 +303,8 @@ class Database:
             "software_focus_passed": orm.software_focus_passed,
             "software_focus_meta": list(orm.software_focus_meta or []),
             "embedding": orm.embedding,
+            "topic_id": orm.topic_id,
+            "tweet_type": orm.tweet_type or "unknown",
             "payload": orm.payload or {},
         }
 

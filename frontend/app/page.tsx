@@ -2,15 +2,16 @@
 
 import { useEffect, useState } from 'react';
 import { FeedList } from '@/components/FeedList';
+import { TopicFeedList } from '@/components/TopicFeedList';
 import { Sidebar } from '@/components/Sidebar';
 import { ReviewQueueView } from '@/components/ReviewQueueView';
 import { MetricsView } from '@/components/MetricsView';
 import { ShieldCheck, Newspaper, Inbox, BarChart3 } from 'lucide-react';
 
-type Tab = 'feed' | 'review' | 'metrics';
+type Tab = 'feed-topics' | 'feed-flat' | 'review' | 'metrics';
 
 export default function HomePage() {
-  const [tab, setTab] = useState<Tab>('feed');
+  const [tab, setTab] = useState<Tab>('feed-topics');
 
   return (
     <div className="min-h-screen">
@@ -27,7 +28,8 @@ export default function HomePage() {
           </div>
 
           <nav className="ml-6 flex items-center gap-1">
-            <TabButton active={tab === 'feed'} onClick={() => setTab('feed')} icon={<Newspaper size={14} />}>Feed</TabButton>
+            <TabButton active={tab === 'feed-topics'} onClick={() => setTab('feed-topics')} icon={<Newspaper size={14} />}>Topics</TabButton>
+            <TabButton active={tab === 'feed-flat'} onClick={() => setTab('feed-flat')} icon={<Newspaper size={14} />}>Flat</TabButton>
             <TabButton active={tab === 'review'} onClick={() => setTab('review')} icon={<Inbox size={14} />}>Review queue</TabButton>
             <TabButton active={tab === 'metrics'} onClick={() => setTab('metrics')} icon={<BarChart3 size={14} />}>Metrics</TabButton>
           </nav>
@@ -39,7 +41,13 @@ export default function HomePage() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-6">
-        {tab === 'feed' && (
+        {tab === 'feed-topics' && (
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-6">
+            <TopicFeedList />
+            <Sidebar />
+          </div>
+        )}
+        {tab === 'feed-flat' && (
           <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-6">
             <FeedList />
             <Sidebar />

@@ -86,7 +86,20 @@ class BotDetector(Stage[CleanedTweet, CleanedTweet]):
         passed: list[CleanedTweet] = []
         rejected: list[tuple[CleanedTweet, str]] = []
 
+        # Layer B Addition 3: known handles get bot_score=0 directly,
+        # skipping the classifier entirely. They're verified humans; we
+        # don't want the model to second-guess that on a noisy text signal.
+        from ..services.known_handles import is_known_any
+
         for ct in items:
+            # Known-handle bypass
+            if is_known_any(ct.raw.author_handle):
+                ct.bot_score = 0.0
+                ct.bot_label = BotPrediction.HUMAN
+                ct.bot_reasons = ["known_handle_bypass"]
+                passed.append(ct)
+                continue
+
             score, reasons = self._score(ct)
             ct.bot_score = float(np.clip(score, 0.0, 1.0))
             ct.bot_reasons = reasons

@@ -18,6 +18,9 @@ from ..models.schemas import (
     ReviewItem,
     ReviewLabel,
     ScoredTweet,
+    TopicDetailResponse,
+    TopicListResponse,
+    TopicSummary,
 )
 from ..pipeline import Pipeline
 from ..services import Database, ReviewQueue, TwitterClient, get_database, quick_search
@@ -156,6 +159,83 @@ async def get_card(tweet_id: str, _: Database = Depends(db)) -> NewsCard:
 
 
 # ---------------------------------------------------------------------
+# Topic endpoints (Layer B Addition 1)
+# ---------------------------------------------------------------------
+
+@router.get("/topics", response_model=TopicListResponse)
+async def list_topics(
+    limit: int = Query(50, ge=1, le=200),
+    _: Database = Depends(db),
+) -> TopicListResponse:
+    """Topic-grouped surface feed.
+
+    Returns topic summaries (one row per cluster), newest activity first.
+    Use `/api/topics/{id}/tweets` to drill into a specific topic.
+    """
+    database = db()
+    rows = database.get_topics(limit=limit)
+    items: list[TopicSummary] = []
+    for r in rows:
+        anchor = None
+        if r.get("anchor_tweet_id"):
+            anchor_row = database.get_one(r["anchor_tweet_id"])
+            if anchor_row is not None:
+                anchor = to_card(_row_to_scored(anchor_row))
+        items.append(TopicSummary(
+            id=r["id"],
+            label=r["label"],
+            anchor_tweet_id=r["anchor_tweet_id"],
+            anchor=anchor,
+            tweet_count=r["tweet_count"],
+            first_seen_at=datetime.fromisoformat(r["first_seen_at"]) if r["first_seen_at"] else datetime.now(),
+            last_activity_at=datetime.fromisoformat(r["last_activity_at"]) if r["last_activity_at"] else datetime.now(),
+            tweet_type_breakdown=r["tweet_type_breakdown"] or {},
+        ))
+    return TopicListResponse(items=items, next_cursor=None, total=len(items))
+
+
+@router.get("/topics/{topic_id}/tweets", response_model=TopicDetailResponse)
+async def topic_detail(
+    topic_id: str,
+    tweet_type: Optional[str] = Query(
+        None,
+        description="Optional tweet_type filter (announcement|opinion|news_report|analysis)",
+    ),
+    _: Database = Depends(db),
+) -> TopicDetailResponse:
+    """All tweets in a single topic, sorted by final_score desc.
+
+    Use `?tweet_type=opinion` etc. to filter to a single tweet kind
+    within the topic.
+    """
+    database = db()
+    topic = database.get_topic(topic_id)
+    if topic is None:
+        raise HTTPException(404, "topic not found")
+
+    anchor = None
+    if topic.get("anchor_tweet_id"):
+        anchor_row = database.get_one(topic["anchor_tweet_id"])
+        if anchor_row is not None:
+            anchor = to_card(_row_to_scored(anchor_row))
+
+    rows = database.get_topic_tweets(topic_id, tweet_type=tweet_type)
+    tweets = [to_card(_row_to_scored(r)) for r in rows]
+
+    summary = TopicSummary(
+        id=topic["id"],
+        label=topic["label"],
+        anchor_tweet_id=topic["anchor_tweet_id"],
+        anchor=anchor,
+        tweet_count=topic["tweet_count"],
+        first_seen_at=datetime.fromisoformat(topic["first_seen_at"]) if topic["first_seen_at"] else datetime.now(),
+        last_activity_at=datetime.fromisoformat(topic["last_activity_at"]) if topic["last_activity_at"] else datetime.now(),
+        tweet_type_breakdown={},
+    )
+    return TopicDetailResponse(topic=summary, tweets=tweets)
+
+
+# ---------------------------------------------------------------------
 # Ingest / run pipeline
 # ---------------------------------------------------------------------
 
@@ -211,33 +291,103 @@ def _resolve_beat(beat: str) -> str:
     return NEWS_QUERIES.get(beat, beat)
 
 
-async def _ingest_real_to_db(query_or_beat: str, max_results: int = 25) -> int:
+async def _ingest_real_to_db(
+    query_or_beat: str,
+    max_results: int = 25,
+    persist_budget: int | None = None,
+    priority_bypass: bool = True,
+) -> int:
     """Run one real-ingest pass: API call → pipeline → DB upsert.
 
     Async because the twitter client is async. Called by both the HTTP
     endpoint and the background real_ingest task in app/main.py.
 
+    Issue 1: when `real_ingest_parallel_known_handle_query=True`, also
+    run a parallel `from:OpenAI OR from:Anthropic OR ...` query with no
+    min_faves so 0-5-minute-old breaking-news tweets from trusted
+    sources still surface. Results are merged by id before the pipeline.
+
+    Issue 5: `persist_budget` is a per-beat cap. When `priority_bypass=True`,
+    tweets from known handles don't count against the cap (they're persisted
+    unconditionally so a known-handle tweet isn't dropped because some
+    other tweet filled the budget first).
+
     Returns the number of items persisted (surfaced + demoted). Raises
     TwitterAPIError on API failure so the caller can decide whether
     to back off.
     """
+    from ..config import get_settings
+    from ..services.known_handles import is_known_any
+
+    s = get_settings()
+    if persist_budget is None:
+        persist_budget = s.real_ingest_max_persist_per_beat
+
     query = _resolve_beat(query_or_beat)
+
+    # Issue 1: build parallel query from cached known-news handles
+    parallel_query: str | None = None
+    if s.real_ingest_parallel_known_handle_query:
+        from ..services.known_handles import known_news_handles
+        news_handles = sorted(known_news_handles())
+        if news_handles:
+            # Cap to a sensible size; ~50 handles keeps the query compact
+            handles_clause = " OR ".join(f"from:{h}" for h in news_handles[:50])
+            parallel_query = f"({handles_clause}) lang:en"
 
     client = TwitterClient()
     try:
-        raw = await client.search_tweets(query, max_results=max_results)
+        raw_main = await client.search_tweets(query, max_results=max_results)
+        raw_parallel: list = []
+        if parallel_query is not None:
+            try:
+                # brief QPS gap between the two calls
+                import asyncio as _asyncio
+                await _asyncio.sleep(s.real_ingest_query_delay_seconds)
+                raw_parallel = await client.search_tweets(
+                    parallel_query, max_results=max_results
+                )
+            except Exception as e:
+                logger.warning(f"[real-ingest] parallel known-handle query failed: {e}")
     finally:
         await client.close()
 
+    # Merge by id — same tweet may appear in both queries
+    raw_merged = raw_main
+    if raw_parallel:
+        seen_ids = {r.id for r in raw_main}
+        raw_merged = list(raw_main) + [r for r in raw_parallel if r.id not in seen_ids]
+
     pipe = Pipeline()
-    out = pipe.run(raw)
+    out = pipe.run(raw_merged)
 
     # Persist surfaced + demoted so the feed / review queue / retraining
-    # loop see every tweet that made it through the pipeline. Same pattern
-    # as _run_mock_ingest.
+    # loop see every tweet that made it through the pipeline. Issue 5:
+    # known-handle tweets bypass the per-beat cap when priority_bypass=True.
     database = db()
     to_persist = list(out.surfaced) + list(getattr(out, "demoted", []))
+    # Layer B Addition 1 + 4: classify tweet types, cluster tweets into
+    # topics, and stamp topic_id + tweet_type onto each tweet. Runs BEFORE
+    # the upsert loop so the DB rows include the new columns.
+    from ..services.topic_grouper_wrapper import cluster_and_persist, maybe_fire_reactive_expansion
+    try:
+        clusters = cluster_and_persist(to_persist, database)
+    except Exception as e:
+        logger.warning(f"[real-ingest] clustering skipped: {e}")
+        clusters = []
+    # Layer B Addition 5 — fire-and-forget reactive expansion for any
+    # cluster of size >= 2. The function schedules an asyncio task and
+    # returns immediately; the task runs in the background.
+    try:
+        maybe_fire_reactive_expansion(clusters)
+    except Exception as e:
+        logger.warning(f"[real-ingest] reactive expansion schedule skipped: {e}")
+    persisted = 0
     for st in to_persist:
+        is_known = priority_bypass and is_known_any(st.raw.author_handle)
+        if not is_known and persisted >= persist_budget:
+            # Budget exhausted; skip non-known tweets
+            continue
         database.upsert_tweet({
             "id": st.raw.id,
             "author_id": st.raw.author_id,
@@ -265,10 +415,11 @@ async def _ingest_real_to_db(query_or_beat: str, max_results: int = 25) -> int:
                 "noise_labels": st.clean.noise_labels,
             },
         })
+        persisted += 1
     if out.review_queue:
         review_queue().push(out.review_queue)
 
-    return len(to_persist)
+    return persisted
 
 
 # ---------------------------------------------------------------------
@@ -429,6 +580,13 @@ def _run_mock_ingest(n: int = 20, seed: Optional[int] = 42) -> IngestResponse:
     # surface_min_credibility cutoff is met.
     database = db()
     to_persist = list(out.surfaced) + list(getattr(out, "demoted", []))
+    # Layer B Addition 1 + 4: cluster + classify type. Stub (no
+    # reactive expansion in mock mode — that needs the live API).
+    from ..services.topic_grouper_wrapper import cluster_and_persist
+    try:
+        cluster_and_persist(to_persist, database)
+    except Exception as e:
+        logger.warning(f"[mock] clustering skipped: {e}")
     for st in to_persist:
         database.upsert_tweet({
             "id": st.raw.id,

@@ -42,6 +42,15 @@ class ReviewLabel(str, Enum):
     NEEDS_MORE_INFO = "needs_more_info"
 
 
+class TweetType(str, Enum):
+    """Heuristic classification of a tweet's role within a topic."""
+    ANNOUNCEMENT = "announcement"   # known-news/known-software author + release language
+    OPINION     = "opinion"        # known-individual author or first-person hedging
+    NEWS_REPORT = "news_report"    # known-news author without release language
+    ANALYSIS    = "analysis"       # long tweet with technical vocabulary, no opinion markers
+    UNKNOWN     = "unknown"         # default fallback
+
+
 # =====================================================================
 # Pipeline input/output schemas
 # =====================================================================
@@ -102,6 +111,13 @@ class CleanedTweet(BaseModel):
     cluster_id: Optional[str] = None
     embedding: Optional[list[float]] = None
 
+    # Attached by Stage 2 — live MinHash object (not bytes; bytes-roundtrip
+    # loses scheme metadata in datasketch 2.0+). Used internally by
+    # Stage 2's rolling-buffer dedup. EXCLUDED from serialization because
+    # Pydantic can't serialize a datasketch.MinHash; the
+    # `corroboration_group_id` (set separately) is the persisted stand-in.
+    minhash_object: Optional[Any] = Field(default=None, exclude=True)
+
     # Attached by Stage 3.5 (NoiseFilter) — opinion / engagement-bait / promo
     noise_score: float = 0.0
     noise_labels: list[str] = Field(default_factory=list)
@@ -109,6 +125,11 @@ class CleanedTweet(BaseModel):
     # Attached by Stage 0 (SoftwareFocusFilter)
     software_focus_passed: bool = True
     software_focus_meta: list[str] = Field(default_factory=list)
+
+    # Attached by Stage 2 — shared id for two tweets that are near-duplicates
+    # from DIFFERENT known handles; Stage 4 uses it to count corroboration
+    # without requiring them to fall in the same time window.
+    corroboration_group_id: Optional[str] = None
 
     @field_validator("bot_score", "relevance_score", "quality_score")
     @classmethod
@@ -145,6 +166,10 @@ class ScoredTweet(BaseModel):
     # Final composite "should show" decision
     final_score: float = 0.0         # weighted composite for ranking
     passed_all_stages: bool = False
+
+    # Layer B Addition 4: heuristic tweet-type classification. Set after
+    # Stage 5 + clustering wrapper; surfaced to the dashboard as a badge.
+    tweet_type: TweetType = TweetType.UNKNOWN
 
     # Bookkeeping
     pipeline_version: str = "0.1.0"
@@ -201,6 +226,40 @@ class NewsCard(BaseModel):
     human_verified: bool = False
     why_shown: list[str] = Field(default_factory=list)
     url: str = ""
+    # Layer B Addition 4 — tweet_type badge (Announcement/Opinion/...)
+    tweet_type: TweetType = TweetType.UNKNOWN
+    # Layer B Addition 1 — set by /api/topics/{id}/tweets. Null when the
+    # tweet was never grouped into a cluster.
+    topic_id: Optional[str] = None
+
+
+# =====================================================================
+# Topics (Layer B Addition 1) — topic-grouped feed model
+# =====================================================================
+
+class TopicSummary(BaseModel):
+    """One card on the topic feed."""
+    id: str
+    label: str
+    anchor_tweet_id: str
+    # Populated by the /api/topics endpoint by joining against the tweets
+    # table. Optional here so the model can be used for partial loads.
+    anchor: Optional[NewsCard] = None
+    tweet_count: int
+    first_seen_at: datetime
+    last_activity_at: datetime
+    tweet_type_breakdown: dict[str, int] = Field(default_factory=dict)
+
+
+class TopicListResponse(BaseModel):
+    items: list[TopicSummary]
+    next_cursor: Optional[int] = None
+    total: int
+
+
+class TopicDetailResponse(BaseModel):
+    topic: TopicSummary
+    tweets: list[NewsCard]  # already sorted by final_score desc
 
 
 class PipelineStats(BaseModel):

@@ -9,6 +9,16 @@ Uses sentence-transformers embeddings + a centroid-based relevance scorer
 trained on a small set of seed news topics. If no model is trained, falls
 back to engagement + length heuristics so the pipeline still produces
 useful scores out of the box.
+
+Issue 6 — known-handle tweets get a configurable burst credit so a single
+tweet from @OpenAI can count as if it had 2 corroborating tweets. Combined
+with the time-window count, this means a known-handle tweet still needs
+≥ 1 real corroborator to fully burst, but doesn't need ≥ 3.
+
+Issue 4 follow-on — consumes corroboration_group_id (set by Stage 2) so
+two near-duplicate tweets from different known handles that survived
+Stage 2's keep-both path can each contribute to the burst count without
+needing to fall in the same time window.
 """
 from __future__ import annotations
 
@@ -55,13 +65,25 @@ class RelevanceFilter(Stage[CleanedTweet, CleanedTweet]):
         burst_window_seconds: int = 300,
         burst_min_count: int = 4,
         burst_jaccard: float = 0.5,
+        # Issue 6: known-handle burst credit. A single tweet from a known
+        # handle counts as if it had this many corroborating tweets. Default
+        # 2 means a known-handle tweet still needs >= 1 real corroborator
+        # to burst (burst_min_count=4 minus 2 credit = 2 needed), but a
+        # single known tweet can push a 3-tweet cluster to burst.
+        known_handle_burst_credit: int = 2,
     ) -> None:
         super().__init__()
         self.relevance_threshold = relevance_threshold
         self.burst_window = burst_window_seconds
         self.burst_min_count = burst_min_count
         self.burst_jaccard = burst_jaccard
+        self.known_handle_burst_credit = known_handle_burst_credit
         self._recent: dict[int, deque] = defaultdict(lambda: deque(maxlen=500))
+        # Cross-cycle corroboration bucket — keyed by hash(corroboration_group_id).
+        # No time-window purge here: Issue 4 follow-on says corroborating
+        # tweets from different known handles can be in different cycles.
+        # Capped at 1000 entries to bound memory.
+        self._corr_counts: dict[int, int] = defaultdict(int)
 
         # Optional: a precomputed centroid for "is this news?"
         self._news_centroid: Optional[np.ndarray] = None
@@ -166,7 +188,15 @@ class RelevanceFilter(Stage[CleanedTweet, CleanedTweet]):
         return min(score, 1.0)
 
     def _is_burst(self, ct: CleanedTweet) -> bool:
-        """Burst = many similar tweets in last `burst_window` seconds."""
+        """Burst = many similar tweets in last `burst_window` seconds.
+
+        Combines three signals:
+          1. Time-window count: tweets with similar tokens in the last N sec
+          2. Cross-cycle corroboration: any prior tweet with the same
+             corroboration_group_id (set by Stage 2 for known-handle twins)
+          3. Known-handle credit: configurable bump if the author is a
+             curated known handle (Issue 6)
+        """
         if not ct.tokens:
             return False
         key = hash(tuple(sorted(ct.tokens[:8]))) & 0xFFFFFFFF
@@ -177,7 +207,35 @@ class RelevanceFilter(Stage[CleanedTweet, CleanedTweet]):
         cutoff = now - self.burst_window
         while dq and dq[0] < cutoff:
             dq.popleft()
-        return len(dq) >= self.burst_min_count
+        windowed_count = len(dq)
+
+        # Issue 4 follow-on: corroboration_group_id accumulates across
+        # cycles (no time-window purge). Each tweet with the same
+        # corroboration_group_id contributes 1 to this bucket. Capped at
+        # 1000 to bound memory.
+        corr_count = 0
+        if ct.corroboration_group_id:
+            corr_key = hash("corr:" + ct.corroboration_group_id) & 0xFFFFFFFF
+            self._corr_counts[corr_key] += 1
+            corr_count = self._corr_counts[corr_key]
+            if len(self._corr_counts) > 1000:
+                # crude eviction: drop the smallest half
+                sorted_keys = sorted(self._corr_counts.items(), key=lambda kv: kv[1])
+                for k, _ in sorted_keys[: len(sorted_keys) // 2]:
+                    del self._corr_counts[k]
+
+        # Issue 6: known-handle credit. A single tweet from a known handle
+        # counts as if it had `known_handle_burst_credit` corroborating
+        # tweets. Default 2, so a single known-handle tweet + 2 real
+        # corroborators = burst (4 ≥ 4).
+        known_credit = 0
+        if self.known_handle_burst_credit > 0:
+            from ..services.known_handles import is_known_any
+            if is_known_any(ct.raw.author_handle):
+                known_credit = self.known_handle_burst_credit
+
+        effective_count = windowed_count + corr_count + known_credit
+        return effective_count >= self.burst_min_count
 
     # ---- public helpers for training/centering ----
     def fit_news_centroid(self, news_texts: list[str]) -> None:

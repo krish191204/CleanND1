@@ -62,13 +62,27 @@ class Pipeline:
     ) -> None:
         s = get_settings()
         self.api_filter = api_filter or ApiFilter(min_followers=s.min_followers)
-        self.text_cleaner = text_cleaner or TextCleaner()
+        # Fix 4: TextCleaner takes the dedup-skip-for-known-handles flag.
+        self.text_cleaner = text_cleaner or TextCleaner(
+            skip_dedup_for_known_handles=s.stage2_skip_dedup_for_known_handles,
+        )
         self.bot_detector = bot_detector or BotDetector()
-        self.noise_filter = noise_filter or NoiseFilter(reject_threshold=s.noise_reject_threshold)
-        self.relevance = relevance or RelevanceFilter()
+        # Issue 3: NoiseFilter soft-penalises (rather than hard-rejects)
+        # tweets from known-news and known-individual handles.
+        self.noise_filter = noise_filter or NoiseFilter(
+            reject_threshold=s.noise_reject_threshold,
+            skip_for_known_handles=s.noise_skip_known_handles,
+        )
+        # Issue 6: RelevanceFilter credits known-handle tweets toward
+        # the burst count.
+        self.relevance = relevance or RelevanceFilter(
+            known_handle_burst_credit=s.known_handle_burst_credit,
+        )
         self.credibility = credibility or CredibilityScorer(
             known_news_handles_path=s.credibility_known_news_handles_path,
         )
+        # Issue 2 + Layer B Addition 3: software focus filter is built
+        # via from_settings() and now also takes the bypass flag.
         self.software_focus = software_focus or SoftwareFocusFilter.from_settings(s)
         self.margin_threshold = margin_threshold if margin_threshold is not None else s.active_learning_margin_threshold
         self.review_batch_size = review_batch_size or s.review_queue_batch_size

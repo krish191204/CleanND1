@@ -1,6 +1,7 @@
 // Shared API client + types for the dashboard.
 
 export type CredibilityLevel = 'high' | 'medium' | 'low' | 'unverified';
+export type TweetType = 'announcement' | 'opinion' | 'news_report' | 'analysis' | 'unknown';
 
 export interface NewsCard {
   id: string;
@@ -17,12 +18,36 @@ export interface NewsCard {
   human_verified: boolean;
   why_shown: string[];
   url: string;
+  tweet_type: TweetType;
+  topic_id?: string | null;
 }
 
 export interface CardListResponse {
   items: NewsCard[];
   next_cursor: number | null;
   total: number;
+}
+
+export interface TopicSummary {
+  id: string;
+  label: string;
+  anchor_tweet_id: string;
+  anchor: NewsCard | null;
+  tweet_count: number;
+  first_seen_at: string;
+  last_activity_at: string;
+  tweet_type_breakdown: Record<string, number>;
+}
+
+export interface TopicListResponse {
+  items: TopicSummary[];
+  next_cursor: number | null;
+  total: number;
+}
+
+export interface TopicDetailResponse {
+  topic: TopicSummary;
+  tweets: NewsCard[];
 }
 
 export interface ReviewItem {
@@ -104,6 +129,12 @@ export const api = {
     if (params.min_credibility !== undefined) qs.set('min_credibility', String(params.min_credibility));
     if (params.handle) qs.set('handle', params.handle);
     return fetchJSON<CardListResponse>(`/api/feed?${qs.toString()}`);
+  },
+  topics: (limit = 50) => fetchJSON<TopicListResponse>(`/api/topics?limit=${limit}`),
+  topicDetail: (id: string, tweetType?: string) => {
+    const qs = new URLSearchParams();
+    if (tweetType) qs.set('tweet_type', tweetType);
+    return fetchJSON<TopicDetailResponse>(`/api/topics/${id}/tweets?${qs.toString()}`);
   },
   stats: () => fetchJSON<PipelineStats>('/api/stats'),
   reviewQueue: (limit = 25) => fetchJSON<ReviewQueueResponse>(`/api/review/queue?limit=${limit}`),

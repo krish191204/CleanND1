@@ -1,0 +1,51 @@
+{
+  "_comment": "Curated list of prominent individual voices (researchers, founders, practitioners) whose opinions are worth surfacing even when they aren't breaking news. Tweets from these handles bypass Stage 0 (software focus), Stage 3 (bot detection — they're verified humans), and Stage 3.5 (noise filter — their 'my take' tweets aren't engagement-bait). Their tweets are classified as OPINION by the TweetType classifier. Lowercase, no @. Edit freely — the singleton reloads on next call to reset_cache().",
+
+  "ai_researchers": [
+    "karpathy",
+    "ylecun",
+    "goodfellow_i",
+    "sama",
+    "ilyasut",
+    "jeffdean",
+    "drjimfan",
+    "fchollet",
+    "hardmaru",
+    "catherineols",
+    "jefrankle",
+    "aidan_mclau",
+    "rasbt",
+    "jeremyphoward",
+    "demishassabis",
+    "sirajraval",
+    "nrehiew",
+    "jeffclune"
+  ],
+
+  "ai_practitioners_founders": [
+    "swyx",
+    "emostaque",
+    "gdb",
+    "pmarca",
+    "alexandr_wang",
+    "kirill_se",
+    "lilianweng",
+    "mxschmidt",
+    "arankromel",
+    "devanshart",
+    "rabois",
+    "paulg"
+  ],
+
+  "ai_journalists_analysts": [
+    "simonw",
+    "bcherny",
+    "ylecun",
+    "karpathy",
+    "deeplearningai",
+    "tristanh",
+    "natfriedman",
+    "shakeelhashim",
+    "lmsysorg"
+  ]
+}

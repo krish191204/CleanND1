@@ -83,6 +83,59 @@ class Settings(BaseSettings):
     mock_auto_seed_batch_size: int = 15
     mock_auto_seed_initial_delay_seconds: float = 2.0  # let the API finish booting first
 
+    # ----- Stage 2 text-clean (Issue 4: keep both near-duplicates from
+    # DIFFERENT known handles; tag with corroboration_group_id so Stage 4
+    # can count them as a single corroboration event).
+    stage2_skip_dedup_for_known_handles: bool = True
+
+    # ----- Stage 3.5 noise (Issue 3: known-news handles get soft penalty,
+    # not hard reject — their "We're thrilled to announce..." tweets should
+    # pass through to Stage 5 which applies a small credibility_penalty).
+    noise_skip_known_handles: bool = True
+
+    # ----- Stage 4 burst (Issue 6: a single tweet from a known handle
+    # counts as if it had `known_handle_burst_credit` corroborating tweets
+    # toward burst detection. Default 2 means a known-handle tweet still
+    # needs ≥ 1 real corroborator to burst, but doesn't need ≥ 3).
+    known_handle_burst_credit: int = 2
+
+    # ----- Real-ingest per-beat budget (Issue 5: was a single
+    # max_persist_per_cycle cap shared across beats, which could starve
+    # later beats if an earlier one filled the budget. Now per-beat).
+    real_ingest_max_persist_per_beat: int = 15
+    # Back-compat alias for the old single-cycle cap. New code reads
+    # `real_ingest_max_persist_per_beat`; this is kept only for any
+    # external scripts that referenced the old name.
+    real_ingest_max_persist_per_cycle: int = 30
+    # Tweets from handles in known_news_handles.json bypass the per-beat
+    # cap and are persisted unconditionally.
+    real_ingest_cap_priority_for_known_handles: bool = True
+
+    # ----- Parallel query for known-news handles (Issue 1: alongside each
+    # beat, run a `from:OpenAI OR from:Anthropic OR ...` query with no
+    # min_faves so 0-5-minute-old breaking-news tweets from trusted
+    # sources still surface).
+    real_ingest_parallel_known_handle_query: bool = True
+
+    # ----- Layer B: product-pivot additions (topic clustering + opinion tweets)
+    # Credible-individuals whitelist (Addition 2/3) — researchers / founders /
+    # practitioners whose opinions are valuable even when not breaking news.
+    known_credible_individuals_path: str = "./data/known_credible_individuals.json"
+    bypass_stages_for_known_individuals: bool = True   # Stage 0/3/3.5 skip for these handles
+
+    # Topic clustering (Addition 1) — runs after Stage 5, before persistence.
+    clustering_enabled: bool = True
+    clustering_distance_threshold: float = 0.25       # cosine distance cutoff; smaller = tighter
+    clustering_min_cluster_size: int = 2             # singletons stay as solo cards
+    clustering_min_tweets_for_label: int = 3          # min tweets before generating a TF-IDF label
+
+    # Reactive topic expansion (Addition 5) — when a cluster with >= 2
+    # tweets forms, immediately fire a one-shot ingest with the cluster's
+    # top terms to surface additional coverage in real time.
+    reactive_topic_expansion_enabled: bool = True
+    reactive_expansion_max_results: int = 50
+    reactive_expansion_cooldown_seconds: int = 3600   # 1 hour per topic
+
     # ----- Real-ingest background poller -----
     # When enabled, a background task polls twitterapi.io with the curated
     # queries in `real_ingest_queries` and runs the results through the

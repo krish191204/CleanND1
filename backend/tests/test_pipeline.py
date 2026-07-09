@@ -152,6 +152,159 @@ def test_credibility_levels():
 
 
 # ----------------------------------------------------------------------
+# Layer A — Issue 3: noise filter soft-penalty for known handles
+# ----------------------------------------------------------------------
+
+def test_noise_filter_soft_penalty_for_known_handle(tmp_path, monkeypatch):
+    """Tweets from @OpenAI with launch language ('we're launching our new
+    model today') pattern-match the noise filter. With Issue 3 the
+    filter applies a SOFT penalty instead of hard-rejecting."""
+    import json as _json
+    news_p = tmp_path / "test_known_news.json"
+    news_p.write_text(_json.dumps({"ai_orgs": ["openai"]}))
+    ind_p = tmp_path / "test_known_individuals.json"
+    ind_p.write_text(_json.dumps({"ai_researchers": ["karpathy"]}))
+    monkeypatch.setenv("CREDIBILITY_KNOWN_NEWS_HANDLES_PATH", str(news_p))
+    monkeypatch.setenv("KNOWN_CREDIBLE_INDIVIDUALS_PATH", str(ind_p))
+
+    from app.services import known_handles
+    known_handles.reset_cache()
+
+    from app.pipeline.stage3b_noise import NoiseFilter
+
+    # Use language that DOES match a noise pattern: 'we're introducing
+    # a new model today' is a hard rejection trigger in
+    # stage3b_noise.PATTERNS['product_announce']:
+    #   \bwe(?:'re|\s+are)\s+(?:extending|launching|releasing|introducing|shipping)\b
+    t = _mk(
+        "we're introducing a brand new model today with revolutionary capabilities for everyone",
+        handle="openai", verified=True, followers=2_000_000,
+    )
+    from app.pipeline.stage2_text_clean import TextCleaner
+    from app.pipeline.stage1_api_filter import ApiFilter
+    raw_list = [t]
+    s1 = ApiFilter(min_followers=200).process(raw_list).passed
+    cleaned = TextCleaner(compute_minhash=False).process(s1).passed
+
+    # Use a low threshold so we exercise the bypass path (any noise
+    # label triggers rejection on unknown handles; only known handles
+    # survive via the soft-penalty).
+    f = NoiseFilter(reject_threshold=0.10, skip_for_known_handles=True)
+    r = f.process(cleaned)
+    # With threshold=0.10, ANY non-zero noise score would reject.
+    # But the known-handle bypass softens the score to <=0.35 and the
+    # threshold (0.10) should be checked against the softened score.
+    # Wait — looking at the code, the threshold is checked against the
+    # EFFECTIVE score (post-softening), so the known handle should pass.
+    assert len(r.passed) == 1, f"known-news should pass via bypass; rejected: {r.rejected}"
+    # The known-handle bypass records the matched noise label with a
+    # 'noise_soft:' prefix so downstream knows to apply a soft penalty
+    # rather than a hard reject.
+    assert r.passed[0].noise_score > 0  # the pattern matched
+    assert any("noise_soft:" in r for r in r.passed[0].bot_reasons)
+
+
+def test_noise_filter_hard_rejects_unknown_handle_with_launch_language(tmp_path, monkeypatch):
+    """Regression: same launch language from an UNKNOWN handle is still
+    hard-rejected (no soft-penalty treatment)."""
+    # Use the same env-var setup so the singleton's settings.cache is reset
+    import json as _json
+    news_p = tmp_path / "test_known_news.json"
+    news_p.write_text(_json.dumps({"ai_orgs": ["openai"]}))
+    ind_p = tmp_path / "test_known_individuals.json"
+    ind_p.write_text(_json.dumps({"ai_researchers": ["karpathy"]}))
+    monkeypatch.setenv("CREDIBILITY_KNOWN_NEWS_HANDLES_PATH", str(news_p))
+    monkeypatch.setenv("KNOWN_CREDIBLE_INDIVIDUALS_PATH", str(ind_p))
+    from app.services import known_handles
+    known_handles.reset_cache()
+
+    from app.pipeline.stage3b_noise import NoiseFilter
+
+    t = _mk(
+        "we're introducing a brand new model today with revolutionary capabilities for everyone",
+        handle="randomuser123",  # not in any known list
+    )
+    from app.pipeline.stage2_text_clean import TextCleaner
+    from app.pipeline.stage1_api_filter import ApiFilter
+    s1 = ApiFilter(min_followers=200).process([t]).passed
+    cleaned = TextCleaner(compute_minhash=False).process(s1).passed
+
+    # threshold lowered to 0.10 to ensure any noise label triggers
+    f = NoiseFilter(reject_threshold=0.10)
+    r = f.process(cleaned)
+    assert len(r.rejected) == 1, "launch language from unknown handle should be rejected"
+
+
+# ----------------------------------------------------------------------
+# Layer A — Issue 4: MinHash dedup keeps both with corroboration_group_id
+# when both authors are known handles.
+# ----------------------------------------------------------------------
+
+def test_known_handle_dedup_keeps_both_with_corroboration_id(tmp_path, monkeypatch):
+    """Two near-duplicate tweets from @AnthropicAI and @simonw should both
+    pass Stage 2 with a shared corroboration_group_id (not rejected as
+    near-duplicates)."""
+    import json as _json
+    news_p = tmp_path / "test_known_news.json"
+    news_p.write_text(_json.dumps({"ai_orgs": ["anthropicai"], "researchers": ["simonw"]}))
+    ind_p = tmp_path / "test_known_individuals.json"
+    ind_p.write_text(_json.dumps({"ai_researchers": []}))
+    monkeypatch.setenv("CREDIBILITY_KNOWN_NEWS_HANDLES_PATH", str(news_p))
+    monkeypatch.setenv("KNOWN_CREDIBLE_INDIVIDUALS_PATH", str(ind_p))
+
+    from app.services import known_handles
+    known_handles.reset_cache()
+
+    # Long enough to produce ≥ 5 tokens after stop-word + length filters.
+    text = "we built a brand new agent framework for claude release today with extended capabilities"
+    t1 = _mk(text, handle="anthropicai", verified=True)
+    t2 = _mk(text, handle="simonw", verified=False)
+
+    from app.pipeline.stage2_text_clean import TextCleaner
+    from app.pipeline.stage1_api_filter import ApiFilter
+    s1 = ApiFilter(min_followers=200).process([t1, t2]).passed
+    f = TextCleaner(skip_dedup_for_known_handles=True)
+    r = f.process(s1)
+    # Both should pass — Issue 4 keeps known-handle near-duplicates
+    assert len(r.passed) == 2, f"expected both passes, got rejected: {r.rejected}"
+    # And they should share a corroboration_group_id
+    a, b = r.passed
+    assert a.corroboration_group_id is not None
+    assert a.corroboration_group_id == b.corroboration_group_id
+
+
+def test_unknown_handle_dedup_drops_second():
+    """Regression: when one of two near-duplicate authors is NOT a known
+    handle, the second tweet is rejected as a near-duplicate (preserving
+    pre-Issue-4 behaviour)."""
+    from app.services import known_handles
+    known_handles.reset_cache()
+
+    text = "SwiftUI 5.7 release notes — fixed async bugs this morning"
+    t1 = _mk(text, handle="anthropicai", verified=True)  # known-news
+    t2 = _mk(text, handle="randomuser456")                 # unknown
+
+    from app.pipeline.stage2_text_clean import TextCleaner
+    from app.pipeline.stage1_api_filter import ApiFilter
+    s1 = ApiFilter(min_followers=200).process([t1, t2]).passed
+    f = TextCleaner(skip_dedup_for_known_handles=True)
+    r = f.process(s1)
+    # t1 passes, t2 rejected (one of two is unknown)
+    assert len(r.passed) == 1
+    assert r.passed[0].raw.author_handle == "anthropicai"
+    assert len(r.rejected) == 1
+    assert "near_duplicate" in r.rejected[0][1]
+
+
+def test_known_handles_setting_propagates_through_orchestrator():
+    """The new stage2_skip_dedup_for_known_handles setting must reach
+    TextCleaner through the orchestrator."""
+    from app.pipeline import Pipeline
+    pipe = Pipeline()
+    assert pipe.text_cleaner.skip_dedup_for_known_handles is True
+
+
+# ----------------------------------------------------------------------
 # End-to-end
 # ----------------------------------------------------------------------
 

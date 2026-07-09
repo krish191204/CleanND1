@@ -202,6 +202,15 @@ class SoftwareFocusFilter(Stage[RawTweet, RawTweet]):
         bio_keywords: Optional[Iterable[str]] = None,
         tweet_keywords: Optional[Iterable[str]] = None,
         scam_keywords: Optional[Iterable[str]] = None,
+        # Fix 2 + Layer B Addition 3: bypass all Stage 0 checks for known
+        # handles. The known-news list (data/known_news_handles.json) is
+        # loaded via the shared singleton. The known-individuals list is
+        # loaded the same way. Bypassing them lets authoritative sources
+        # (Reuters covering AI policy, karpathy giving his hot take) pass
+        # through Stage 0 even if their bio / tweet doesn't match the
+        # AI/software keyword banks.
+        skip_known_news: bool = True,
+        skip_known_individuals: bool = True,
     ) -> None:
         super().__init__()
         self.min_followers = int(min_followers)
@@ -212,6 +221,8 @@ class SoftwareFocusFilter(Stage[RawTweet, RawTweet]):
         self.check_engagement = bool(check_engagement)
         self.check_scam = bool(check_scam)
         self.check_profile_metadata = bool(check_profile_metadata)
+        self.skip_known_news = bool(skip_known_news)
+        self.skip_known_individuals = bool(skip_known_individuals)
 
         self._bio_rx = [re.compile(p, re.IGNORECASE) for p in (bio_keywords or _BIO_KEYWORDS)]
         self._tweet_rx = [re.compile(p, re.IGNORECASE) for p in (tweet_keywords or _TWEET_KEYWORDS)]
@@ -225,7 +236,8 @@ class SoftwareFocusFilter(Stage[RawTweet, RawTweet]):
         logger.info(
             f"[software_focus] loaded {len(self.known_accounts)} known accounts, "
             f"{len(self._bio_rx)} bio kws, {len(self._tweet_rx)} tweet kws, "
-            f"{len(self._scam_rx)} scam kws"
+            f"{len(self._scam_rx)} scam kws, skip_known_news={self.skip_known_news}, "
+            f"skip_known_individuals={self.skip_known_individuals}"
         )
 
     # ------------------------------------------------------------------
@@ -261,6 +273,8 @@ class SoftwareFocusFilter(Stage[RawTweet, RawTweet]):
             check_engagement=settings.software_check_engagement,
             check_scam=settings.software_check_scam,
             check_profile_metadata=settings.software_check_profile_metadata,
+            skip_known_news=settings.bypass_stages_for_known_individuals,
+            skip_known_individuals=settings.bypass_stages_for_known_individuals,
         )
 
     # ------------------------------------------------------------------
@@ -289,6 +303,20 @@ class SoftwareFocusFilter(Stage[RawTweet, RawTweet]):
 
     # ------------------------------------------------------------------
     def _reject_reason(self, tw: RawTweet, now: datetime) -> Optional[str]:
+        # Fix 2 + Layer B Addition 3: known-news and known-individual
+        # handles bypass every check below. We import lazily so this
+        # module stays importable in tests that don't touch the
+        # known_handles singleton.
+        if self.skip_known_news or self.skip_known_individuals:
+            from ..services.known_handles import is_known_news, is_known_individual
+            handle = (tw.author_handle or "").lower().lstrip("@")
+            if self.skip_known_news and is_known_news(handle):
+                self._annotate_bypass(tw, "known_news_bypass")
+                return None
+            if self.skip_known_individuals and is_known_individual(handle):
+                self._annotate_bypass(tw, "known_individual_bypass")
+                return None
+
         if self.check_profile_metadata:
             if tw.author_followers < self.min_followers:
                 return f"followers<{self.min_followers}"
@@ -373,6 +401,13 @@ class SoftwareFocusFilter(Stage[RawTweet, RawTweet]):
             meta.append("verified_software_account")
         meta.append(f"followers={tw.author_followers}")
         object.__setattr__(tw, "_software_focus_meta", meta)
+
+    def _annotate_bypass(self, tw: RawTweet, reason: str) -> None:
+        """Annotation for tweets that bypassed Stage 0 via a known-handle
+        early-exit. Used by Issue 2 / Addition 3."""
+        if not hasattr(tw, "_software_focus_passed"):
+            object.__setattr__(tw, "_software_focus_passed", True)
+        object.__setattr__(tw, "_software_focus_meta", [reason, f"followers={tw.author_followers}"])
 
 
 # =====================================================================

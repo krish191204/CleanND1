@@ -146,27 +146,25 @@ async def _real_ingest_task() -> None:
 
     logger.info(
         f"[real-ingest] enabled — interval={s.real_ingest_interval_seconds}s "
-        f"queries={s.real_ingest_queries} max/cycle={s.real_ingest_max_persist_per_cycle}"
+        f"queries={s.real_ingest_queries} max/beat={s.real_ingest_max_persist_per_beat}"
     )
     while True:
         try:
-            persisted = 0
+            cycle_total = 0
             for q in s.real_ingest_queries:
-                if persisted >= s.real_ingest_max_persist_per_cycle:
-                    logger.info(
-                        f"[real-ingest] hit per-cycle cap "
-                        f"({s.real_ingest_max_persist_per_cycle}) — stopping early"
-                    )
-                    break
                 try:
+                    # Issue 5: per-beat cap. known-handle tweets bypass this
+                    # budget (they're considered "must-persist" for the demo).
                     n = await _ingest_real_to_db(
                         query_or_beat=q,
                         max_results=s.real_ingest_max_per_query,
+                        persist_budget=s.real_ingest_max_persist_per_beat,
+                        priority_bypass=s.real_ingest_cap_priority_for_known_handles,
                     )
-                    persisted += n
+                    cycle_total += n
                     logger.info(
                         f"[real-ingest] beat={q!r} persisted={n} "
-                        f"(cycle total={persisted})"
+                        f"(cycle total={cycle_total})"
                     )
                 except TwitterAPIError as e:
                     # 402 / credits-exhausted / 5xx — log and stop the cycle
@@ -181,7 +179,7 @@ async def _real_ingest_task() -> None:
                 # Pause between beats so we don't trip twitterapi.io's free-tier
                 # QPS limit (returns 429 'Too Many Requests').
                 await asyncio.sleep(s.real_ingest_query_delay_seconds)
-            logger.info(f"[real-ingest] cycle done — total persisted={persisted}")
+            logger.info(f"[real-ingest] cycle done — total persisted={cycle_total}")
         except asyncio.CancelledError:
             raise
         except Exception as e:  # pragma: no cover — defensive
