@@ -52,6 +52,13 @@ def to_card(st: ScoredTweet, human_verified: bool = False) -> NewsCard:
         human_verified=human_verified,
         why_shown=why,
         url=url,
+        # Layer B Addition 1: is_clustered reflects whether this tweet
+        # was grouped into any topic. Drives the "single source" warning
+        # in the UI for unclustered tweets — useful when the feed has
+        # many singletons alongside a few tight clusters.
+        tweet_type=st.tweet_type,
+        topic_id=st.cluster_id,
+        is_clustered=bool(st.cluster_id),
     )
 
 
