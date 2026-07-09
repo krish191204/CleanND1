@@ -2,10 +2,10 @@
 
 import { useEffect, useState } from 'react';
 import useSWR from 'swr';
-import Link from 'next/link';
-import { Newspaper, RefreshCw, Loader2, AlertTriangle, Database } from 'lucide-react';
-import { api, TopicListResponse } from '@/lib/api';
+import { Newspaper, RefreshCw, Loader2, AlertTriangle, Database, ChevronDown, ChevronUp, Filter } from 'lucide-react';
+import { api, TopicListResponse, TopicDetailResponse, TweetType } from '@/lib/api';
 import { CredibilityBadge } from './CredibilityBadge';
+import { NewsCardItem } from './NewsCard';
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
@@ -17,32 +17,56 @@ const fetcher = (url: string) => fetch(url).then((r) => r.json());
  *   - anchor tweet preview (avatar + first 120 chars + credibility badge)
  *   - tweet_type breakdown chips ("3 Announcements · 7 Opinions · 2 Reports")
  *
- * Clicking a card navigates to /topics/[id] for the detail view.
+ * Clicking a card expands an inline drilldown of the cluster's tweets
+ * (filtered by tweet_type). We use an inline expansion rather than a
+ * separate /topics/[id] page because the project's Next.js config uses
+ * `output: 'export'` (static export), which doesn't support dynamic
+ * routes without generateStaticParams().
  */
 export function TopicFeedList() {
-  const [minLevel, setMinLevel] = useState<'high' | 'medium' | 'low'>('medium');
   const { data, error, isLoading, mutate } = useSWR<TopicListResponse>(
     `/api/topics?limit=50`,
     fetcher,
     { refreshInterval: 15000 },
   );
 
-  const [feedback, setFeedback] = useState<Record<string, { up: number; down: number }>>({});
-  useEffect(() => {
-    if (!data?.items?.length) return;
-    // Aggregate feedback isn't keyed on topics yet — only fetch for
-    // anchor cards in the visible topics.
-    const anchorIds = data.items
-      .map((t) => t.anchor_tweet_id)
-      .filter((id): id is string => !!id);
-    if (anchorIds.length === 0) return;
-    fetch(
-      `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/feedback/aggregates?tweet_ids=${encodeURIComponent(anchorIds.join(','))}`,
-    )
-      .then((r) => r.json())
-      .then((map) => setFeedback(map || {}))
-      .catch(() => {});
-  }, [data]);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [typeFilter, setTypeFilter] = useState<TweetType | 'all'>('all');
+  const [expandedData, setExpandedData] = useState<TopicDetailResponse | null>(null);
+  const [expandedLoading, setExpandedLoading] = useState(false);
+
+  const handleToggle = async (topicId: string) => {
+    if (expandedId === topicId) {
+      setExpandedId(null);
+      setExpandedData(null);
+      return;
+    }
+    setExpandedId(topicId);
+    setExpandedLoading(true);
+    setTypeFilter('all');  // reset filter when switching topics
+    try {
+      const data = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/topics/${topicId}/tweets`,
+      ).then((r) => r.json());
+      setExpandedData(data);
+    } finally {
+      setExpandedLoading(false);
+    }
+  };
+
+  const handleTypeFilter = async (tf: TweetType | 'all') => {
+    if (!expandedId) return;
+    setTypeFilter(tf);
+    setExpandedLoading(true);
+    try {
+      const data = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/topics/${expandedId}/tweets${tf !== 'all' ? `?tweet_type=${tf}` : ''}`,
+      ).then((r) => r.json());
+      setExpandedData(data);
+    } finally {
+      setExpandedLoading(false);
+    }
+  };
 
   const ingest = async (n: number, seed: number) => {
     await api.ingestMock(n, seed);
@@ -66,7 +90,7 @@ export function TopicFeedList() {
         </button>
         <div className="ml-auto flex items-center gap-2">
           <button onClick={() => ingest(20, 42)} className="btn btn-ghost text-xs">
-            <Database size={12} /> +20 mock (will cluster)
+            <Database size={12} /> +20 mock (clusters)
           </button>
         </div>
       </div>
@@ -93,8 +117,8 @@ export function TopicFeedList() {
         <div className="card text-center py-12">
           <p className="text-ink-300 font-medium">No topics yet.</p>
           <p className="text-ink-500 text-sm mt-1">
-            Click <span className="text-cred-high">+20 mock</span> to inject sample tweets — they'll be
-            clustered by the topic grouper.
+            Click <span className="text-cred-high">+20 mock (clusters)</span> to inject sample tweets — they&apos;ll
+            be clustered by the topic grouper.
           </p>
         </div>
       )}
@@ -108,9 +132,13 @@ export function TopicFeedList() {
             .sort((a, b) => (b[1] as number) - (a[1] as number))
             .map(([k, n]) => `${n} ${k.replace('_', ' ')}`)
             .slice(0, 4);
+          const isExpanded = expandedId === topic.id;
           return (
-            <Link key={topic.id} href={`/topics/${topic.id}`} className="block">
-              <article className="card hover:border-cred-medium/40 transition-colors">
+            <article key={topic.id} className="card">
+              <button
+                onClick={() => handleToggle(topic.id)}
+                className="w-full text-left"
+              >
                 <div className="flex items-start gap-4">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-baseline gap-3 mb-1">
@@ -150,11 +178,77 @@ export function TopicFeedList() {
                       )}
                     </div>
                   )}
+                  <div className="shrink-0 self-center">
+                    {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                  </div>
                 </div>
-              </article>
-            </Link>
+              </button>
+
+              {isExpanded && (
+                <div className="mt-4 pt-4 border-t border-ink-800">
+                  {expandedLoading && (
+                    <div className="text-ink-400 text-sm flex items-center gap-2">
+                      <Loader2 size={14} className="animate-spin" /> Loading topic tweets…
+                    </div>
+                  )}
+                  {!expandedLoading && expandedData && (
+                    <TopicDrilldown
+                      topicLabel={expandedData.topic.label || '(unlabeled)'}
+                      tweets={expandedData.tweets}
+                      typeFilter={typeFilter}
+                      onTypeFilter={handleTypeFilter}
+                    />
+                  )}
+                </div>
+              )}
+            </article>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+const TYPE_FILTERS: { label: string; value: TweetType | 'all' }[] = [
+  { label: 'All',         value: 'all' },
+  { label: 'Announcement', value: 'announcement' },
+  { label: 'Opinion',      value: 'opinion' },
+  { label: 'Reports',      value: 'news_report' },
+  { label: 'Analysis',     value: 'analysis' },
+];
+
+function TopicDrilldown({
+  topicLabel, tweets, typeFilter, onTypeFilter,
+}: {
+  topicLabel: string;
+  tweets: any[];
+  typeFilter: TweetType | 'all';
+  onTypeFilter: (tf: TweetType | 'all') => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2 flex-wrap">
+        <Filter size={14} className="text-ink-400" />
+        <span className="text-xs text-ink-400">Filter:</span>
+        {TYPE_FILTERS.map((f) => (
+          <button
+            key={f.value}
+            onClick={() => onTypeFilter(f.value)}
+            className={`btn text-xs ${
+              typeFilter === f.value ? 'btn-primary' : 'btn-ghost'
+            }`}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
+      <div className="space-y-2">
+        {tweets.length === 0 && (
+          <div className="text-ink-500 text-sm italic">No tweets match this filter.</div>
+        )}
+        {tweets.map((card) => (
+          <NewsCardItem key={card.id} card={card} feedbackCounts={undefined} />
+        ))}
       </div>
     </div>
   );
