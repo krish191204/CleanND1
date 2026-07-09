@@ -132,7 +132,23 @@ class TextCleaner(Stage[RawTweet, CleanedTweet]):
             try:
                 ct = self._clean(tw)
             except Exception as e:
-                logger.warning(f"text_clean failed for {tw.id}: {e}")
+                # Sub-agent B Bug A: previously the tweet vanished here
+                # — passed+rejected stayed < input. Now log the traceback
+                # and append a stub CleanedTweet to `rejected` with a
+                # `processing_failed:<exc-class>` reason so the caller
+                # can audit / retry. We need a CleanedTweet-shaped stub
+                # so the StageResult shape stays consistent.
+                logger.exception(f"text_clean failed for {tw.id}")
+                stub = CleanedTweet(
+                    raw=tw,
+                    clean_text="",
+                    tokens=[],
+                    lemmas=[],
+                    language=tw.lang or "und",
+                )
+                rejected.append(
+                    (stub, f"processing_failed:{type(e).__name__}:{e}")
+                )
                 continue
 
             if len(ct.tokens) < 5:
@@ -236,5 +252,10 @@ class TextCleaner(Stage[RawTweet, CleanedTweet]):
                 if j >= threshold:
                     return float(j), original
             return None
-        except Exception:  # pragma: no cover
+        except Exception:  # Sub-agent B Bug C: previously this silently
+            # swallowed MinHash errors (e.g. scheme mismatches after a
+            # datasketch upgrade). Fail-open treats the tweet as a
+            # non-duplicate — better than dropping a good tweet — but
+            # log the full traceback so the failure is visible.
+            logger.exception("TextCleaner._find_dup: jaccard() raised")
             return None

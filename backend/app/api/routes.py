@@ -428,6 +428,8 @@ async def _ingest_real_to_db(
                 "noise_score": st.clean.noise_score,
                 "noise_labels": st.clean.noise_labels,
             },
+            # Sub-agent B Bug B: stamp is_mock on creation.
+            "is_mock": is_mock,
         })
         persisted += 1
     if out.review_queue:

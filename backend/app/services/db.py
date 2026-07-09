@@ -121,6 +121,16 @@ class Database:
             orm.topic_id = t.get("topic_id", orm.topic_id)
             orm.tweet_type = t.get("tweet_type", orm.tweet_type) or "unknown"
             orm.payload = t.get("payload", {})
+            # Sub-agent B Bug B: cluster_and_persist(..., is_mock=True) runs
+            # BEFORE upsert_tweet (see topic_grouper_wrapper.cluster_and_persist
+            # step 4 + /api/routes.py). When the tweet is fresh, the
+            # `s.get(TweetORM, st.raw.id)` lookup there returns None and the
+            # is_mock assignment is a no-op. Without this line, mock tweets
+            # default to is_mock=False and leak into the live dashboard.
+            # Read is_mock from the input dict with a default of False so
+            # callers can stamp the flag at ORM creation time.
+            if "is_mock" in t:
+                orm.is_mock = bool(t["is_mock"])
 
     def get_surfaced(
         self,
