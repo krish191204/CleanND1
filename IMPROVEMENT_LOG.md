@@ -39,6 +39,17 @@ unrelated to any of this work).
 
 ---
 
+## Sub-agent B: Final Report
+
+- **Number of bugs found and fixed:** 4 (3 silent-failure / data-loss bugs + 1 dead-code cleanup)
+- **Branch:** `agent/pipeline-correctness` (pushed to origin)
+- **Commits:** `9476168` (Bug A), `e23ce2b` (Bug B), `4dbad19` (Bug C), `91c888b` (Bug D)
+- **Pass rate before / after:** 60 passed → 66 passed (+6 new tests in `test_pipeline_correctness.py`, plus the existing 60 baseline preserved)
+- **Worst bug caught (was it user-facing? could it have caused data loss?):** Bug B — `is_mock` flag not propagated for fresh mock tweets. This was user-facing AND would have caused continuous data pollution: the kiosk auto-seeder runs every 60 seconds, generating mock tweets. Those mock tweets were being inserted into the DB with `is_mock=False` (since `cluster_and_persist` ran BEFORE `upsert_tweet` and found no ORM to update), so the live dashboard filter `WHERE is_mock.is_(False)` could not exclude them. Every kiosk tick would have leaked mock content into the surface feed that the user expected to show only real news. Bug A (Stage 2 silent tweet drop) was the highest-impact for *correctness*: a malformed input would silently vanish from `result.passed + result.rejected` while `result.stats["input"]` still counted it, so the orchestrator's level-floor cut would underflow and the tweet would disappear from the DB without ever hitting the review queue.
+- **Cleanup only (no new bugs caught):** Bug C (silent fail-open in `_find_dup`) and Bug D (duplicate `_resolve_paths` defs) were defense-in-depth — neither was actively broken, but both could become bugs the moment the surrounding code changed. Bug C's exception path now logs at ERROR level so a future datasketch upgrade that breaks MinHash compatibility won't silently degrade dedup.
+
+---
+
 ## Sub-agent C: Final Report
 
 - **Pass rate before / after:** Mock ingest surfacing went from **10/50 (20%) → 33/50 (66%)** at seed=42; across 4 seeds: 54-70% (baseline 20-30%)
