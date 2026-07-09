@@ -2,19 +2,20 @@
 
 import { useEffect, useState } from 'react';
 import useSWR from 'swr';
-import { Newspaper, RefreshCw, Loader2, AlertTriangle, Database } from 'lucide-react';
-import { api, TopicListResponse } from '@/lib/api';
+import { Newspaper, RefreshCw, Loader2, AlertTriangle, Database, ChevronDown, ChevronUp, Filter } from 'lucide-react';
+import { api, TopicListResponse, TopicDetailResponse, TweetType } from '@/lib/api';
 import { CredibilityBadge } from './CredibilityBadge';
+import { NewsCardItem } from './NewsCard';
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
 /**
- * Topic-only feed (Layer B Addition 6, simplified) — the dashboard's
- * "Topics" tab. One card per topic (the topic's label + anchor tweet
- * preview + credibility badge + size). No inline cluster expansion, no
- * drilldown. Singletons (topics of 1 tweet) are filtered out at the
- * API layer — they're surfaced in the "Flat" tab instead, flagged
- * "Single source" by the news card component.
+ * Topic-grouped feed (Layer B Addition 6) — the dashboard's "Topics" tab.
+ * One card per topic (label + anchor + size). Clicking a card expands
+ * an inline drilldown of the cluster's tweets (filtered by tweet_type).
+ * The drilldown is a real cluster, not just topic cards — the dashboard
+ * surfaces the actual corroborating tweets so you can see the evidence
+ * behind each topic.
  */
 export function TopicFeedList() {
   const { data, error, isLoading, mutate } = useSWR<TopicListResponse>(
@@ -22,6 +23,44 @@ export function TopicFeedList() {
     fetcher,
     { refreshInterval: 15000 },
   );
+
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [typeFilter, setTypeFilter] = useState<TweetType | 'all'>('all');
+  const [expandedData, setExpandedData] = useState<TopicDetailResponse | null>(null);
+  const [expandedLoading, setExpandedLoading] = useState(false);
+
+  const handleToggle = async (topicId: string) => {
+    if (expandedId === topicId) {
+      setExpandedId(null);
+      setExpandedData(null);
+      return;
+    }
+    setExpandedId(topicId);
+    setExpandedLoading(true);
+    setTypeFilter('all');
+    try {
+      const data = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/topics/${topicId}/tweets`,
+      ).then((r) => r.json());
+      setExpandedData(data);
+    } finally {
+      setExpandedLoading(false);
+    }
+  };
+
+  const handleTypeFilter = async (tf: TweetType | 'all') => {
+    if (!expandedId) return;
+    setTypeFilter(tf);
+    setExpandedLoading(true);
+    try {
+      const data = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/topics/${expandedId}/tweets${tf !== 'all' ? `?tweet_type=${tf}` : ''}`,
+      ).then((r) => r.json());
+      setExpandedData(data);
+    } finally {
+      setExpandedLoading(false);
+    }
+  };
 
   const ingest = async (n: number, seed: number) => {
     await api.ingestMock(n, seed);
@@ -87,51 +126,123 @@ export function TopicFeedList() {
             .sort((a, b) => (b[1] as number) - (a[1] as number))
             .map(([k, n]) => `${n} ${k.replace('_', ' ')}`)
             .slice(0, 4);
+          const isExpanded = expandedId === topic.id;
           return (
             <article key={topic.id} className="card">
-              <div className="flex items-start gap-4">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-baseline gap-3 mb-1">
-                    <h3 className="font-semibold text-ink-100 truncate">
-                      {topic.label || '(unlabeled cluster)'}
-                    </h3>
-                    <span className="text-xs text-ink-500 shrink-0">
-                      {topic.tweet_count} tweet{topic.tweet_count === 1 ? '' : 's'}
-                    </span>
-                  </div>
-                  {anchor && (
-                    <div className="text-sm text-ink-300 mt-1">
-                      <span className="text-ink-500 mr-1">@{anchor.handle}:</span>
-                      {anchor.headline?.slice(0, 120) || anchor.summary?.slice(0, 120)}
-                    </div>
-                  )}
-                  {breakdownChips.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-2">
-                      {breakdownChips.map((c, i) => (
-                        <span
-                          key={i}
-                          className="text-xs px-1.5 py-0.5 rounded bg-ink-800 text-ink-300"
-                        >
-                          {c}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                {anchor && (
-                  <div className="shrink-0 w-24 flex flex-col items-end gap-1">
-                    <CredibilityBadge level={anchor.credibility_level} />
-                    {anchor.tweet_type && anchor.tweet_type !== 'unknown' && (
-                      <span className="text-xs text-ink-500 capitalize">
-                        {anchor.tweet_type.replace('_', ' ')}
+              <button
+                onClick={() => handleToggle(topic.id)}
+                className="w-full text-left"
+              >
+                <div className="flex items-start gap-4">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-baseline gap-3 mb-1">
+                      <h3 className="font-semibold text-ink-100 truncate">
+                        {topic.label || '(unlabeled cluster)'}
+                      </h3>
+                      <span className="text-xs text-ink-500 shrink-0">
+                        {topic.tweet_count} tweet{topic.tweet_count === 1 ? '' : 's'}
                       </span>
+                    </div>
+                    {anchor && (
+                      <div className="text-sm text-ink-300 mt-1">
+                        <span className="text-ink-500 mr-1">@{anchor.handle}:</span>
+                        {anchor.headline?.slice(0, 120) || anchor.summary?.slice(0, 120)}
+                      </div>
+                    )}
+                    {breakdownChips.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-2">
+                        {breakdownChips.map((c, i) => (
+                          <span
+                            key={i}
+                            className="text-xs px-1.5 py-0.5 rounded bg-ink-800 text-ink-300"
+                          >
+                            {c}
+                          </span>
+                        ))}
+                      </div>
                     )}
                   </div>
-                )}
-              </div>
+                  {anchor && (
+                    <div className="shrink-0 w-24 flex flex-col items-end gap-1">
+                      <CredibilityBadge level={anchor.credibility_level} />
+                      {anchor.tweet_type && anchor.tweet_type !== 'unknown' && (
+                        <span className="text-xs text-ink-500 capitalize">
+                          {anchor.tweet_type.replace('_', ' ')}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  <div className="shrink-0 self-center">
+                    {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                  </div>
+                </div>
+              </button>
+
+              {isExpanded && (
+                <div className="mt-4 pt-4 border-t border-ink-800">
+                  {expandedLoading && (
+                    <div className="text-ink-400 text-sm flex items-center gap-2">
+                      <Loader2 size={14} className="animate-spin" /> Loading cluster tweets…
+                    </div>
+                  )}
+                  {!expandedLoading && expandedData && (
+                    <ClusterDrilldown
+                      topicLabel={expandedData.topic.label || '(unlabeled)'}
+                      tweets={expandedData.tweets}
+                      typeFilter={typeFilter}
+                      onTypeFilter={handleTypeFilter}
+                    />
+                  )}
+                </div>
+              )}
             </article>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+const TYPE_FILTERS: { label: string; value: TweetType | 'all' }[] = [
+  { label: 'All',          value: 'all' },
+  { label: 'Announcement', value: 'announcement' },
+  { label: 'Opinion',      value: 'opinion' },
+  { label: 'Reports',      value: 'news_report' },
+  { label: 'Analysis',     value: 'analysis' },
+];
+
+function ClusterDrilldown({
+  topicLabel, tweets, typeFilter, onTypeFilter,
+}: {
+  topicLabel: string;
+  tweets: any[];
+  typeFilter: TweetType | 'all';
+  onTypeFilter: (tf: TweetType | 'all') => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2 flex-wrap">
+        <Filter size={14} className="text-ink-400" />
+        <span className="text-xs text-ink-400">Cluster · {topicLabel} · filter:</span>
+        {TYPE_FILTERS.map((f) => (
+          <button
+            key={f.value}
+            onClick={() => onTypeFilter(f.value)}
+            className={`btn text-xs ${
+              typeFilter === f.value ? 'btn-primary' : 'btn-ghost'
+            }`}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
+      <div className="space-y-2">
+        {tweets.length === 0 && (
+          <div className="text-ink-500 text-sm italic">No tweets in this cluster.</div>
+        )}
+        {tweets.map((card) => (
+          <NewsCardItem key={card.id} card={card} feedbackCounts={undefined} />
+        ))}
       </div>
     </div>
   );
