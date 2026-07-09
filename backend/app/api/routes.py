@@ -634,6 +634,8 @@ def _run_mock_ingest(n: int = 20, seed: Optional[int] = 42) -> IngestResponse:
                 "noise_score": st.clean.noise_score,
                 "noise_labels": st.clean.noise_labels,
             },
+            # Sub-agent B Bug B: stamp is_mock=True for mock ingests.
+            "is_mock": True,
         })
     if out.review_queue:
         review_queue().push(out.review_queue)

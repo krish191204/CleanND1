@@ -54,10 +54,13 @@ class Settings(BaseSettings):
     credibility_high_threshold: float = 0.55
     credibility_medium_threshold: float = 0.35
     credibility_known_news_handles_path: str = "./data/known_news_handles.json"
-    # Default surface level — "medium" populates the demo feed with both
-    # HIGH-credibility and MEDIUM-credibility items so the dashboard isn't
-    # empty between mock-ingest ticks. Set to "high" for the strictest feed.
-    surface_min_credibility: str = "medium"
+    # Default surface level — "low" populates the demo feed with HIGH,
+    # MEDIUM, and LOW-credibility items so the dashboard isn't empty
+    # between mock-ingest ticks. With mock templates and low engagement,
+    # many valid tweets fall into the LOW tier (0.20–0.34) and were being
+    # dropped. Set to "high" for the strictest feed, or "medium" to drop
+    # LOW items but keep MEDIUM/HIGH.
+    surface_min_credibility: str = "low"
     noise_reject_threshold: float = 0.30
 
     # ----- Software focus stage (Stage 0) — AI/ML + programming + tech -----
