@@ -184,26 +184,22 @@ class Database:
                 .limit(limit)
             )
             topics = list(s.execute(stmt).scalars())
-            # Attach a tweet_type_breakdown per topic via a single grouped query
+            # Attach a tweet_type_breakdown per topic via a single grouped
+            # query. Result rows are (topic_id, tweet_type, count) tuples —
+            # we materialise them into a dict[topic_id, dict[tweet_type, count]]
+            # so the per-topic loop is O(breakdown_size) not O(n_tweets).
             from sqlalchemy import func as sa_func
-            type_counts = dict(
-                s.execute(
-                    select(TweetORM.topic_id, TweetORM.tweet_type, sa_func.count())
-                    .where(TweetORM.topic_id.is_not(None))
-                    .where(TweetORM.passed_all_stages.is_(True))
-                    .group_by(TweetORM.topic_id, TweetORM.tweet_type)
-                ).all()
-            )
+            rows = s.execute(
+                select(TweetORM.topic_id, TweetORM.tweet_type, sa_func.count())
+                .where(TweetORM.topic_id.is_not(None))
+                .where(TweetORM.passed_all_stages.is_(True))
+                .group_by(TweetORM.topic_id, TweetORM.tweet_type)
+            ).all()
+            type_counts: dict[str, dict[str, int]] = {}
+            for tid, ttype, count in rows:
+                type_counts.setdefault(tid, {})[ttype] = count
             result = []
             for t in topics:
-                breakdown: dict[str, int] = {}
-                key = t.id
-                for (tid, ttype, count) in (
-                    (k, v, type_counts[(k, v)])
-                    for k, v in type_counts.keys()
-                    if k == key
-                ):
-                    breakdown[ttype] = breakdown.get(ttype, 0) + count
                 result.append({
                     "id": t.id,
                     "label": t.label,
@@ -212,7 +208,7 @@ class Database:
                     "first_seen_at": t.first_seen_at.isoformat() if t.first_seen_at else None,
                     "last_activity_at": t.last_activity_at.isoformat() if t.last_activity_at else None,
                     "last_expansion_at": t.last_expansion_at.isoformat() if t.last_expansion_at else None,
-                    "tweet_type_breakdown": breakdown,
+                    "tweet_type_breakdown": type_counts.get(t.id, {}),
                 })
             return result
 

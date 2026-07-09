@@ -137,7 +137,7 @@ class CredibilityScorer(Stage[CleanedTweet, ScoredTweet]):
             level = self._level(score)
             reasons.extend(self._level_reasons(level))
 
-            st = ScoredTweet(raw=ct.raw, clean=ct)
+            st = ScoredTweet(raw=ct.raw, clean=ct, embedding=ct.embedding)
             st.credibility_score = score
             st.credibility_level = level
             st.credibility_reasons = reasons

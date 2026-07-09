@@ -84,8 +84,8 @@ def cluster_and_persist(
             "id": topic_id,
             "label": c.label,
             "anchor_tweet_id": c.anchor_tweet_id,
-            "first_seen_at": min(t.processed_at for t in c.tweets).isoformat(),
-            "last_activity_at": max(t.processed_at for t in c.tweets).isoformat(),
+            "first_seen_at": min(t.processed_at for t in c.tweets),
+            "last_activity_at": max(t.processed_at for t in c.tweets),
             "tweet_count": c.tweet_count,
             "extras": {},
         })

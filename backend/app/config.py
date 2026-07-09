@@ -125,9 +125,9 @@ class Settings(BaseSettings):
 
     # Topic clustering (Addition 1) — runs after Stage 5, before persistence.
     clustering_enabled: bool = True
-    clustering_distance_threshold: float = 0.25       # cosine distance cutoff; smaller = tighter
+    clustering_distance_threshold: float = 0.65       # cosine distance cutoff; smaller = tighter. 0.65 is loose enough to group near-related items even in the diverse mock dataset; real-world data with similar topics benefits from 0.25-0.4.
     clustering_min_cluster_size: int = 2             # singletons stay as solo cards
-    clustering_min_tweets_for_label: int = 3          # min tweets before generating a TF-IDF label
+    clustering_min_tweets_for_label: int = 2          # min tweets before generating a TF-IDF label
 
     # Reactive topic expansion (Addition 5) — when a cluster with >= 2
     # tweets forms, immediately fire a one-shot ingest with the cluster's

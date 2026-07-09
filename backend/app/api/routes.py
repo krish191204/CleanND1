@@ -507,6 +507,12 @@ def _run_mock_ingest(n: int = 20, seed: Optional[int] = 42) -> IngestResponse:
         "TypeScript 5.7 release notes: the new type system improvements clean up a lot of legacy code in our api handlers.",
         "Docker build cache invalidation after a dependency update is the source of 80% of our CI pain. Filed an issue upstream.",
         "Our team adopted a code review checklist after the last incident — turned out to be the highest-leverage change we made this quarter.",
+        # Near-duplicate templates — used 2-3 times per batch so the topic
+        # clustering has real corroboration to work with. The Issue 4 dedup
+        # fix (Stage 2) would otherwise drop these as duplicates, but the
+        # MinHash keep-both-for-known-handles path is what makes this OK.
+        "Anthropic released a new version of Claude with breakthrough benchmark scores today on coding and reasoning tasks.",
+        "Anthropic just released a brand new Claude model with breakthrough benchmark scores on coding tasks today.",
     ]
     templates_bot = [
         "BUY NOW click here for free bitcoin 🚀🚀🚀🚀🚀 http://spam.example",
