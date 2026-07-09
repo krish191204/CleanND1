@@ -115,12 +115,15 @@ async def feed(
     min_level: Optional[str] = Query(None, description="high | medium | low | unverified"),
     handle: Optional[str] = None,
     human_verified: Optional[bool] = None,
+    include_mock: bool = Query(False, description="Include mock-generated tweets (default off)"),
     _: Database = Depends(db),
 ) -> CardListResponse:
     """Surface feed.
 
     Defaults to SURFACE_MIN_CREDIBILITY (high) — cleanest feed.
     Pass `min_level=medium` to opt in to more items, or `min_credibility=0` for all.
+    Mock data is filtered out by default — pass `?include_mock=true` to see
+    the kiosk auto-seeder's synthetic tweets (for design review).
     """
     database = db()
     settings = get_settings()
@@ -143,6 +146,7 @@ async def feed(
         offset=offset,
         min_credibility=min_credibility,
         handle=handle,
+        include_mock=include_mock,
     )
     cards = [to_card(_row_to_scored(r)) for r in rows]
     return CardListResponse(items=cards, next_cursor=offset + len(cards), total=len(cards))
@@ -165,15 +169,20 @@ async def get_card(tweet_id: str, _: Database = Depends(db)) -> NewsCard:
 @router.get("/topics", response_model=TopicListResponse)
 async def list_topics(
     limit: int = Query(50, ge=1, le=200),
+    include_mock: bool = Query(False, description="Include mock-only topics (default off)"),
     _: Database = Depends(db),
 ) -> TopicListResponse:
     """Topic-grouped surface feed.
 
     Returns topic summaries (one row per cluster), newest activity first.
     Use `/api/topics/{id}/tweets` to drill into a specific topic.
+
+    Topics whose only members are mock-data are filtered out by default
+    (the live dashboard never shows fabricated clusters). Pass
+    `?include_mock=true` to surface them.
     """
     database = db()
-    rows = database.get_topics(limit=limit)
+    rows = database.get_topics(limit=limit, include_mock=include_mock)
     items: list[TopicSummary] = []
     for r in rows:
         anchor = None
@@ -201,12 +210,14 @@ async def topic_detail(
         None,
         description="Optional tweet_type filter (announcement|opinion|news_report|analysis)",
     ),
+    include_mock: bool = Query(False, description="Include mock-generated tweets in this topic"),
     _: Database = Depends(db),
 ) -> TopicDetailResponse:
     """All tweets in a single topic, sorted by final_score desc.
 
     Use `?tweet_type=opinion` etc. to filter to a single tweet kind
-    within the topic.
+    within the topic. Pass `?include_mock=true` to surface mock-data
+    members (filtered out by default).
     """
     database = db()
     topic = database.get_topic(topic_id)
@@ -219,7 +230,9 @@ async def topic_detail(
         if anchor_row is not None:
             anchor = to_card(_row_to_scored(anchor_row))
 
-    rows = database.get_topic_tweets(topic_id, tweet_type=tweet_type)
+    rows = database.get_topic_tweets(
+        topic_id, tweet_type=tweet_type, include_mock=include_mock
+    )
     tweets = [to_card(_row_to_scored(r)) for r in rows]
 
     summary = TopicSummary(
@@ -383,6 +396,7 @@ async def _ingest_real_to_db(
     except Exception as e:
         logger.warning(f"[real-ingest] reactive expansion schedule skipped: {e}")
     persisted = 0
+    is_mock = False  # real-ingest: never mock
     for st in to_persist:
         is_known = priority_bypass and is_known_any(st.raw.author_handle)
         if not is_known and persisted >= persist_budget:
@@ -590,7 +604,7 @@ def _run_mock_ingest(n: int = 20, seed: Optional[int] = 42) -> IngestResponse:
     # reactive expansion in mock mode — that needs the live API).
     from ..services.topic_grouper_wrapper import cluster_and_persist
     try:
-        cluster_and_persist(to_persist, database)
+        cluster_and_persist(to_persist, database, is_mock=True)
     except Exception as e:
         logger.warning(f"[mock] clustering skipped: {e}")
     for st in to_persist:

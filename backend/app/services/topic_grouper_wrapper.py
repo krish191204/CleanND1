@@ -33,11 +33,17 @@ from ..services.db import Database
 def cluster_and_persist(
     scored: list[ScoredTweet],
     database: Database,
+    is_mock: bool = False,
 ) -> list[Cluster]:
     """Run clustering + tweet_type classification on a batch of scored
     tweets, persist TopicORM rows + topic_id FKs. Returns the list of
     Cluster objects (singletons included) so the caller can drive
     reactive-expansion off the larger clusters.
+
+    `is_mock` is stamped on each tweet (via set_tweet_type + a
+    follow-up upsert with is_mock=True). The /api/feed and /api/topics
+    endpoints filter mock data out by default so the live dashboard
+    never shows fabricated content.
 
     `scored` is a list of `ScoredTweet` instances returned by
     Pipeline.run(). The function mutates each scored tweet's
@@ -96,6 +102,18 @@ def cluster_and_persist(
                 st.raw.id,
                 st.tweet_type.value if hasattr(st.tweet_type, "value") else str(st.tweet_type),
             )
+
+    # 4. Stamp is_mock on each tweet in the batch. We do this via a
+    # direct SQL update rather than re-running upsert (cheaper).
+    if scored:
+        from sqlalchemy import update as sa_update
+        from ..models.db_models import TweetORM as _Tweet
+        with database.session() as s:
+            for st in scored:
+                t = s.get(_Tweet, st.raw.id)
+                if t is not None:
+                    t.is_mock = is_mock
+            s.commit()
 
     return clusters
 

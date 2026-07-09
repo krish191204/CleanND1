@@ -170,6 +170,11 @@ class ScoredTweet(BaseModel):
     # Layer B Addition 4: heuristic tweet-type classification. Set after
     # Stage 5 + clustering wrapper; surfaced to the dashboard as a badge.
     tweet_type: TweetType = TweetType.UNKNOWN
+    # True iff this tweet was grouped into a topic cluster (tweet has
+    # topic_id != NULL). Unclustered tweets are flagged in the dashboard
+    # as "single source" / less corroborated — a useful signal when the
+    # feed has lots of singletons alongside a few tight clusters.
+    is_clustered: bool = False
 
     # Bookkeeping
     pipeline_version: str = "0.1.0"
@@ -231,6 +236,7 @@ class NewsCard(BaseModel):
     # Layer B Addition 1 — set by /api/topics/{id}/tweets. Null when the
     # tweet was never grouped into a cluster.
     topic_id: Optional[str] = None
+    is_clustered: bool = False
 
 
 # =====================================================================

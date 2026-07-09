@@ -48,7 +48,7 @@ class Database:
 
     def init(self) -> None:
         Base.metadata.create_all(self.engine)   # creates `topics` table; idempotent for existing
-        # Layer B Addition 1: ALTER TABLE for the new columns on existing
+        # Layer B Addition 1 + 4: ALTER TABLE for the new columns on existing
         # `tweets` rows. SQLite doesn't add new columns to existing tables
         # via metadata.create_all, so we run explicit ALTER TABLE migrations
         # guarded by a PRAGMA check (column-existence). Safe to re-run.
@@ -65,12 +65,18 @@ class Database:
                     conn.exec_driver_sql(
                         "ALTER TABLE tweets ADD COLUMN tweet_type VARCHAR(16) DEFAULT 'unknown'"
                     )
+                # is_mock column added separately so mock-data can be
+                # filtered out of the dashboard by default.
+                if "is_mock" not in cols:
+                    conn.exec_driver_sql(
+                        "ALTER TABLE tweets ADD COLUMN is_mock BOOLEAN DEFAULT 0"
+                    )
                 # Index on topic_id for fast topic-detail queries
                 conn.exec_driver_sql(
                     "CREATE INDEX IF NOT EXISTS ix_tweets_topic_id ON tweets(topic_id)"
                 )
         except Exception as e:
-            logger.warning(f"topic_id / tweet_type migration skipped: {e}")
+            logger.warning(f"tweets column migration skipped: {e}")
         logger.info(f"db initialized at {self.url}")
 
     @contextmanager
@@ -123,7 +129,12 @@ class Database:
         min_credibility: float = 0.0,
         handle: Optional[str] = None,
         human_verified: Optional[bool] = None,
+        include_mock: bool = False,
     ) -> list[dict]:
+        """Default behaviour excludes mock data so the live dashboard
+        never shows fabricated tweets. Set `include_mock=True` (or pass
+        `?include_mock=true` on /api/feed) to surface them for design
+        review."""
         with self.session() as s:
             stmt = (
                 select(TweetORM)
@@ -131,6 +142,8 @@ class Database:
                 .where(TweetORM.credibility_score >= min_credibility)
                 .order_by(TweetORM.final_score.desc())
             )
+            if not include_mock:
+                stmt = stmt.where(TweetORM.is_mock.is_(False))
             if handle:
                 stmt = stmt.where(TweetORM.author_handle == handle)
             stmt = stmt.limit(limit).offset(offset)
@@ -173,9 +186,13 @@ class Database:
             if orm is not None:
                 orm.topic_id = topic_id
 
-    def get_topics(self, limit: int = 50) -> list[dict]:
+    def get_topics(self, limit: int = 50, include_mock: bool = False) -> list[dict]:
         """Topical clusters, newest activity first. Each entry mirrors the
-        TopicORM row plus a tweet_type_breakdown summary."""
+        TopicORM row plus a tweet_type_breakdown summary.
+
+        Excludes mock-data clusters by default (clusters whose only
+        members are mock tweets). Pass include_mock=True to include them.
+        """
         from ..models.db_models import TopicORM
         with self.session() as s:
             stmt = (
@@ -184,22 +201,30 @@ class Database:
                 .limit(limit)
             )
             topics = list(s.execute(stmt).scalars())
-            # Attach a tweet_type_breakdown per topic via a single grouped
-            # query. Result rows are (topic_id, tweet_type, count) tuples —
-            # we materialise them into a dict[topic_id, dict[tweet_type, count]]
-            # so the per-topic loop is O(breakdown_size) not O(n_tweets).
+            # If we're excluding mock data, we need to filter the topics
+            # based on whether they have any non-mock tweets. Easier to
+            # do the breakdown query first, then filter.
             from sqlalchemy import func as sa_func
             rows = s.execute(
-                select(TweetORM.topic_id, TweetORM.tweet_type, sa_func.count())
+                select(TweetORM.topic_id, TweetORM.tweet_type, TweetORM.is_mock, sa_func.count())
                 .where(TweetORM.topic_id.is_not(None))
                 .where(TweetORM.passed_all_stages.is_(True))
-                .group_by(TweetORM.topic_id, TweetORM.tweet_type)
+                .group_by(TweetORM.topic_id, TweetORM.tweet_type, TweetORM.is_mock)
             ).all()
             type_counts: dict[str, dict[str, int]] = {}
-            for tid, ttype, count in rows:
-                type_counts.setdefault(tid, {})[ttype] = count
+            mock_only_topics: set[str] = set()  # topics that have at least one mock tweet
+            for tid, ttype, is_mock, count in rows:
+                type_counts.setdefault(tid, {})[ttype] = type_counts.get(tid, {}).get(ttype, 0) + count
+                if is_mock:
+                    mock_only_topics.add(tid)
             result = []
             for t in topics:
+                # Real-only view: only show topics with no mock members at
+                # all. A topic that has even one mock tweet can have a
+                # label generated from that mock text, so it's not safe
+                # to surface as a "real" topic.
+                if not include_mock and t.id in mock_only_topics:
+                    continue
                 result.append({
                     "id": t.id,
                     "label": t.label,
@@ -234,9 +259,11 @@ class Database:
         self,
         topic_id: str,
         tweet_type: Optional[str] = None,
+        include_mock: bool = False,
     ) -> list[dict]:
         """All passed tweets in a topic, sorted by final_score desc.
-        Optional `tweet_type` filter (e.g. 'opinion', 'announcement')."""
+        Optional `tweet_type` filter (e.g. 'opinion', 'announcement').
+        Excludes mock data by default."""
         with self.session() as s:
             stmt = (
                 select(TweetORM)
@@ -244,6 +271,8 @@ class Database:
                 .where(TweetORM.passed_all_stages.is_(True))
                 .order_by(TweetORM.final_score.desc())
             )
+            if not include_mock:
+                stmt = stmt.where(TweetORM.is_mock.is_(False))
             if tweet_type:
                 stmt = stmt.where(TweetORM.tweet_type == tweet_type)
             return [self._serialize_tweet(orm) for orm in s.execute(stmt).scalars()]
@@ -301,6 +330,8 @@ class Database:
             "embedding": orm.embedding,
             "topic_id": orm.topic_id,
             "tweet_type": orm.tweet_type or "unknown",
+            "is_clustered": bool(orm.topic_id),
+            "is_mock": bool(orm.is_mock),
             "payload": orm.payload or {},
         }
 
