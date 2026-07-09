@@ -96,7 +96,7 @@ class Settings(BaseSettings):
     real_ingest_interval_seconds: float = 600.0       # 10 min — credit-conscious
     real_ingest_initial_delay_seconds: float = 5.0
     real_ingest_queries: list[str] = [
-        "ai_news", "ai_policy", "tech", "breaking", "science",
+        "ai_news", "china_ai", "tech",
     ]
     real_ingest_max_per_query: int = 25
     real_ingest_max_persist_per_cycle: int = 50      # flood guard

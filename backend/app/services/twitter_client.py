@@ -250,6 +250,14 @@ NEWS_QUERIES = {
         "\"EU AI\" OR \"export controls\") "
         "lang:en min_faves:3"
     ),
+    # New: China AI / Huawei / Baidu / DeepSeek / etc. — catches the
+    # "China bans foreign AI models" story and related policy moves.
+    "china_ai": (
+        "(China OR Chinese OR Huawei OR Baidu OR DeepSeek OR Alibaba OR "
+        "\"Tencent\" OR \"Baidu\" OR \"state council\" OR \"MIIT\" OR "
+        "\"CAC\") (AI OR \"artificial intelligence\" OR model OR LLM) "
+        "lang:en min_faves:3"
+    ),
     "verified_only": "lang:en filter:verified",
 }
 
