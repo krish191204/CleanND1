@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import useSWR from 'swr';
-import { Newspaper, RefreshCw, Loader2, AlertTriangle, Database, ChevronDown, ChevronUp, Filter } from 'lucide-react';
+import { Newspaper, RefreshCw, Loader2, AlertTriangle, Database, ChevronDown, ChevronUp, Filter, TrendingUp } from 'lucide-react';
 import { api, TopicListResponse, TopicDetailResponse, TweetType } from '@/lib/api';
 import { CredibilityBadge } from './CredibilityBadge';
 import { NewsCardItem } from './NewsCard';
@@ -16,10 +16,23 @@ const fetcher = (url: string) => fetch(url).then((r) => r.json());
  * The drilldown is a real cluster, not just topic cards — the dashboard
  * surfaces the actual corroborating tweets so you can see the evidence
  * behind each topic.
+ *
+ * Header has a tweet-type filter (All / Announcements / Opinions / Reports
+ * / Analysis) — filters the topic list to those dominated by the chosen
+ * type. A "min size" filter (≥ 2 / ≥ 3 / all) hides singletons so the
+ * dashboard doesn't drown in ungrouped noise.
  */
+const TOPIC_TYPE_FILTERS: { label: string; value: TweetType | 'all' }[] = [
+  { label: 'All',          value: 'all' },
+  { label: 'Announcements', value: 'announcement' },
+  { label: 'Opinions',      value: 'opinion' },
+  { label: 'Reports',      value: 'news_report' },
+  { label: 'Analysis',     value: 'analysis' },
+];
+
 export function TopicFeedList() {
   const { data, error, isLoading, mutate } = useSWR<TopicListResponse>(
-    `/api/topics?limit=50`,
+    `/api/topics?limit=200`,
     fetcher,
     { refreshInterval: 15000 },
   );
@@ -28,6 +41,7 @@ export function TopicFeedList() {
   const [typeFilter, setTypeFilter] = useState<TweetType | 'all'>('all');
   const [expandedData, setExpandedData] = useState<TopicDetailResponse | null>(null);
   const [expandedLoading, setExpandedLoading] = useState(false);
+  const [minSize, setMinSize] = useState<1 | 2 | 3>(1);
 
   const handleToggle = async (topicId: string) => {
     if (expandedId === topicId) {
@@ -67,13 +81,41 @@ export function TopicFeedList() {
     mutate();
   };
 
+  // Apply type + size filters client-side. The /api/topics response
+  // includes `tweet_type_breakdown` per topic; we use that to decide
+  // what to show.
+  const filtered = useMemo(() => {
+    if (!data?.items) return [];
+    return data.items.filter((t) => {
+      if (t.tweet_count < minSize) return false;
+      if (typeFilter === 'all') return true;
+      const bd = t.tweet_type_breakdown || {};
+      return (bd[typeFilter] || 0) > 0;
+    });
+  }, [data, typeFilter, minSize]);
+
+  // Aggregate stats across the unfiltered list (so the header reflects
+  // the whole DB, not just what's currently visible).
+  const stats = useMemo(() => {
+    if (!data?.items) return null;
+    const totalTweets = data.items.reduce((s, t) => s + (t.tweet_count || 0), 0);
+    const byType: Record<string, number> = {};
+    for (const t of data.items) {
+      const bd = t.tweet_type_breakdown || {};
+      for (const [k, v] of Object.entries(bd)) {
+        byType[k] = (byType[k] || 0) + v;
+      }
+    }
+    return { topics: data.items.length, tweets: totalTweets, byType };
+  }, [data]);
+
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2 flex-wrap card">
         <Newspaper size={14} className="text-ink-400" />
         <span className="text-xs text-ink-400">Topics:</span>
         <span className="text-xs text-ink-500">
-          {data?.items?.length ?? 0} topic{data?.items?.length === 1 ? '' : 's'}
+          {data?.items?.length ?? 0} cluster{data?.items?.length === 1 ? '' : 's'}
         </span>
         <button
           onClick={() => mutate()}
@@ -88,6 +130,59 @@ export function TopicFeedList() {
           </button>
         </div>
       </div>
+
+      {/* Stats summary + filters row */}
+      {stats && (
+        <div className="card space-y-2">
+          <div className="flex items-center gap-3 text-xs flex-wrap text-ink-300">
+            <TrendingUp size={12} className="text-ink-400" />
+            <span><b className="text-ink-100">{stats.topics}</b> topics</span>
+            <span className="text-ink-500">·</span>
+            <span><b className="text-ink-100">{stats.tweets}</b> surfaced tweets</span>
+            {Object.entries(stats.byType)
+              .sort((a, b) => b[1] - a[1])
+              .map(([k, n]) => (
+                <span key={k} className="text-xs text-ink-500">
+                  · {n} {k.replace('_', ' ')}
+                </span>
+              ))
+            }
+          </div>
+          <div className="flex items-center gap-2 flex-wrap pt-1 border-t border-ink-800">
+            <Filter size={12} className="text-ink-400" />
+            <span className="text-xs text-ink-400 mr-1">Type:</span>
+            {TOPIC_TYPE_FILTERS.map((f) => {
+              const isActive = typeFilter === f.value;
+              const count = f.value === 'all'
+                ? stats.topics
+                : Object.values(
+                    data?.items
+                      .filter((t) => (t.tweet_type_breakdown?.[f.value] || 0) > 0)
+                      .reduce<Record<number, true>>((acc, _t, i) => { acc[i] = true; return acc; }, {})
+                  ).length || 0;
+              return (
+                <button
+                  key={f.value}
+                  onClick={() => setTypeFilter(f.value)}
+                  className={`btn text-xs ${isActive ? 'btn-primary' : 'btn-ghost'}`}
+                >
+                  {f.label} <span className="text-ink-500">({count})</span>
+                </button>
+              );
+            })}
+            <span className="text-xs text-ink-400 ml-3 mr-1">Min size:</span>
+            {([1, 2, 3] as const).map((n) => (
+              <button
+                key={n}
+                onClick={() => setMinSize(n)}
+                className={`btn text-xs ${minSize === n ? 'btn-primary' : 'btn-ghost'}`}
+              >
+                {n === 1 ? 'All' : `≥ ${n}`}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {isLoading && (
         <div className="card text-ink-400 text-sm flex items-center gap-2">
