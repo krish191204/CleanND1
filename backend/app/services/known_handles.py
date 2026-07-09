@@ -63,26 +63,6 @@ def _load_set(path: str | Path, log_label: str) -> frozenset[str]:
     return frozenset(out)
 
 
-def _resolve_paths() -> tuple[str, str]:
-    """Read both file paths from Settings. Lazy import avoids a circular
-    dep on app.config (which is fine in practice — config.py doesn't
-    import services)."""
-    from ..config import get_settings
-
-    s = get_settings()
-    return s.credibility_known_news_handles_path, s.software_known_accounts_path
-
-
-def _resolve_paths() -> tuple[str, str]:
-    """Read both file paths from Settings. Lazy import avoids a circular
-    dep on app.config (which is fine in practice — config.py doesn't
-    import services)."""
-    from ..config import get_settings
-
-    s = get_settings()
-    return s.credibility_known_news_handles_path, s.software_known_accounts_path
-
-
 @functools.cache
 def _news_handles() -> frozenset[str]:
     news_path, _, _ = _resolve_paths()
@@ -108,7 +88,15 @@ def _resolve_paths() -> tuple[str, str, str]:
     singleton so that test monkeypatch-setenv() calls take effect on the
     next singleton read. Settings are still the
     .env-file-driven default; this function prefers env-overrides when
-    present."""
+    present.
+
+    Sub-agent B iter-4 note: previously this module had two earlier
+    `_resolve_paths` defs (returning 2-tuples) that were silently
+    overridden by the third def below. Python's last-definition-wins
+    rule meant the actual `_resolve_paths` was the 3-tuple version — but
+    the dead code confused readers and triggered 'redefined' linter
+    warnings. Removed both stale defs.
+    """
     # Try env-direct first (test-friendly), fall back to the project-root
     # defaults that match the layout in `backend/data/*.json`.
     news = os.environ.get("CREDIBILITY_KNOWN_NEWS_HANDLES_PATH")
