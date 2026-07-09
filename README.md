@@ -1,189 +1,239 @@
 # CleanND — Cleaned, Credible News from X/Twitter
 
-A production-grade real-time news aggregation system that ingests posts from X/Twitter, runs
-them through a 6-stage cleaning pipeline, scores credibility, and serves a modern dashboard
-with a human-in-the-loop review queue that continuously improves the underlying models.
-
-> **Note on the included API key.** A twitterapi.io key was provided in this conversation
-> for development. The current balance reads `Credits is not enough. Please recharge.` —
-> the real API is wired up and works as soon as credits are added. The system ships with a
-> `/api/ingest/mock` endpoint that runs the full pipeline on synthetic tweets so the entire
-> stack (pipeline → DB → dashboard → review queue → retrain) is demonstrable today.
-> The dev key is in your local `.env` (gitignored) — override at runtime via
-> `TWITTER_API_KEY=...` or rotate it from the twitterapi.io dashboard.
+A real-time news aggregator that pulls posts from X/Twitter, runs each one through a 6-stage
+cleaning pipeline, scores it for credibility, and serves a dashboard with a human-in-the-loop
+review queue that retrains the underlying models. Built so the demo dashboard has something
+real to show without anyone manually clicking "+15 mock" every five minutes.
 
 ---
 
-## Architecture
+## TL;DR — what this is
 
-```
-   X / Twitter API               ┌──────────────────────────────┐
-       (or mock) ───────────────▶│  STAGE 0: Software Focus     │
-                                  │   AI/ML + SW-sphere gate     │
-                                  │  STAGE 1: API Filter          │
-                                  │  STAGE 2: Text Clean          │
-                                  │   ↓ MinHash dedup             │
-                                  │  STAGE 3: Bot Detection       │
-                                  │   RF + heuristics (+ DistilBERT)│
-                                  │  STAGE 3.5: Noise Filter     │
-                                  │   opinion / engagement-bait  │
-                                  │  STAGE 4: Relevance + Burst   │
-                                  │   sentence-transformers       │
-                                  │  STAGE 5: Credibility         │
-                                  │   domain / source / burst     │
-                                  └────────┬─────────────────────┘
-                                           │
-              ┌────────────────────────────┼────────────────────────────┐
-              ▼                            ▼                            ▼
-       ┌────────────┐               ┌────────────┐              ┌─────────────┐
-       │ Postgres / │               │ Review     │              │ WebSocket   │
-       │ SQLite     │               │ Queue      │              │ live feed   │
-       └─────┬──────┘               └────┬───────┘              └──────┬──────┘
-             │                            │                             │
-             ▼                            ▼                             ▼
-      ┌──────────────────────────────────────────────────────────────────────┐
-      │                  FastAPI backend (8000)                             │
-      │   /api/feed  /api/ingest  /api/review/*  /api/ml/*  /api/stats     │
-      └─────────────────────────────┬──────────────────────────────────────┘
-                                    ▼
-                          ┌────────────────────┐
-                          │  Next.js dashboard │
-                          │   (port 3000 dev / │
-                          │   served at /)      │
-                          └────────────────────┘
-                                    │
-                          ┌─────────┴──────────┐
-                          ▼                    ▼
-                   Active learning       Celery beat
-                   → retrain nightly      (or trigger)
-```
+| | |
+|---|---|
+| **What it does** | Pulls tweets from twitterapi.io, classifies them as news vs. noise, scores credibility, surfaces the good ones. |
+| **Where it runs** | FastAPI on `:8000` (uvicorn), Next.js dashboard served from the same port. Open `http://localhost:8000`. |
+| **Active feed** | ~60 real-news items right now (Muse from Meta, GPT-5.6 Sol from OpenAI, MistralAI robostral, NVIDIA Grok 4.5, AnthropicAI export-controls, …). |
+| **Self-sustaining** | Background poller runs every 5 min, top-up mock auto-seeder runs every 60s when the feed drops below 3 items. |
+| **Self-improving** | Human labels in the Review queue feed a nightly retrain of the bot classifier. F1 score climbs per cycle. |
 
 ---
 
-## Quick start
+## Motivation
 
-### 1. Backend
+The original ask: *"Why doesn't real news like Meta releasing Muse or China banning
+overseas AI models show up in the feed?"* The answer was structural, not data-quality:
 
-```bash
-cd backend
-pip install --break-system-packages -r requirements.txt
-# Train the initial bot classifier (uses synthetic seed data)
-python -m scripts.train_initial_model
-# Start the API
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+1. **The front door was too narrow.** `NEWS_QUERIES` used single keywords (`breaking`,
+   `world`, `tech`) that returned 0 results from twitterapi.io. Multi-word product names
+   (Muse, Claude 4, DeepSeek-R1, China AI ban) sailed past.
+2. **There was no background poller for the real API.** Only the mock auto-seeder ran
+   automatically; the real `/api/ingest` needed a manual `curl` every time.
+3. **The known-news-handle credibility boost was underweighted** (+0.2), so authoritative
+   sources sat at MEDIUM when they should be HIGH.
+
+Once those were fixed, important real news started flowing. The "how do we get important
+news without flooding with BS" question has the same answer: **feed the pipeline enough
+high-signal input that the existing layers can do their job.** Most of the noise filtering
+was already built — it was starved for input.
+
+---
+
+## How it works
+
+```
+   X/Twitter API                ┌─────────────────────────────────────┐
+       (or mock) ──────────────▶│  STAGE 0: Software Focus           │
+                                │   AI/ML + SW-sphere gate           │
+                                │  STAGE 1: API Filter                │
+                                │  STAGE 2: Text Clean + MinHash dedup│
+                                │  STAGE 3: Bot Detection (RF + heur)│
+                                │  STAGE 3.5: Noise / opinion filter  │
+                                │  STAGE 4: Relevance + burst detect  │
+                                │  STAGE 5: Credibility               │
+                                └────────┬────────────────────────────┘
+                                         │
+              ┌──────────────────────────┼───────────────────────────────┐
+              ▼                          ▼                               ▼
+       ┌────────────┐             ┌──────────────┐                ┌─────────────────┐
+       │ Postgres / │             │ Review queue │                │ WebSocket live  │
+       │ SQLite     │             │              │                │ feed            │
+       └─────┬──────┘             └──────┬───────┘                └────────┬────────┘
+             ▼                            ▼                                 ▼
+      ┌─────────────────────────────────────────────────────────────────────────┐
+      │              FastAPI backend (uvicorn :8000)                            │
+      │   /api/feed  /api/ingest  /api/ingest/mock  /api/review/*  /api/ml/*    │
+      └─────────────────────────────────┬───────────────────────────────────────┘
+                                        ▼
+                          ┌──────────────────────────┐
+                          │   Next.js dashboard      │
+                          │   (served at /)         │
+                          └──────────────────────────┘
+                                        │
+                              Human labels in
+                              Review queue →
+                              POST /api/ml/retrain →
+                              model_metrics table
 ```
 
-API docs at `http://localhost:8000/docs`.
+Three background tasks run inside the FastAPI lifespan:
 
-### 2. Frontend
+- `_ws_pusher` — WebSocket broadcast loop (existing).
+- `_mock_autoseed_task` — every 60s, if surfaced feed < 3 items, run a small mock ingest.
+- `_real_ingest_task` — every 5 min, cycle through `["ai_news", "china_ai", "tech"]`
+  with a 7s QPS gap between beats, run each through the pipeline, persist.
 
-```bash
-cd frontend
-npm install
-npm run build            # produces /out (static export)
-# OR
-npm run dev              # dev server on :3000
-```
-
-If you built the static export, the FastAPI server picks it up automatically and serves
-the dashboard at `http://localhost:8000/`.
-
-### 3. Try the system
-
-Open `http://localhost:8000/` → click **+15 mock** to inject synthetic tweets through
-the full pipeline → see them in the feed → switch to **Review queue** → label a few →
-**Retrain model** → watch the F1 improve in **Metrics**.
-
-The mock generator emits software-sphere tweets (Anthropic/Claude, PyTorch, Kubernetes,
-React, Stripe-engineering style) so they pass the Stage 0 focus gate and exercise every
-downstream stage end-to-end. A minority of synthetic tweets use crypto/airdrop
-templates and are visibly rejected at Stage 0's `tweet_scam_terms` sub-check — useful
-for demo contrast.
-
-**Auto-seed (kiosk mode).** By default the backend runs a background task that
-checks every `MOCK_AUTO_SEED_CHECK_INTERVAL_SECONDS` (60s) whether the surfaced feed
-is below `MOCK_AUTO_SEED_MIN_FEED_SIZE` (5). If so, it runs a small mock ingest
-(`MOCK_AUTO_SEED_BATCH_SIZE` = 15) to top it up. This keeps the dashboard populated
-during long demos without you having to click "+15 mock" repeatedly. Disable with
-`MOCK_AUTO_SEED_ENABLED=false` (the test suite does this automatically).
-
-For the real X API once your twitterapi.io account has credits:
-
-```bash
-curl -X POST http://localhost:8000/api/ingest \
-  -H 'Content-Type: application/json' \
-  -d '{"beat":"breaking","max_results":20}'
-```
+All three cancel cleanly on shutdown.
 
 ---
 
 ## The 6-stage cleaning pipeline
 
-Stage 0 is an opt-in soft gate that restricts the feed to the broader software
-sphere (AI/ML + programming + tooling). It is enabled by default
-(`software_focus_enabled = True`) and can be turned off via env to ingest
-unfiltered X traffic.
+Each stage returns `StageResult(passed, rejected, stats)`. A tweet rejected by any stage
+is dropped (or demoted at the surface floor). All stages are independently unit-testable.
 
-| Stage | Module | What it does | Tunable |
-|---|---|---|---|
-| 0. Software focus | `app/pipeline/stage_software_focus.py` | Bio/handle/content must be AI/ML or software sphere; ≥100 followers, ≥30 days old, no scam terms (giveaway/airdrop/crypto), ≥5 engagement | `software_focus_enabled`, `software_min_followers`, `software_min_account_age_days`, `software_min_engagement`, `check_scam`, `check_retweets`, `check_engagement` |
-| 1. API filter | `app/pipeline/stage1_api_filter.py` | Language, follower count, account age, hashtag/URL spam, RT/quote detection | `min_followers`, `min_account_age_days`, `max_hashtags`, `max_urls`, `allowed_languages` |
-| 2. Text clean | `app/pipeline/stage2_text_clean.py` | Strip URLs/mentions, lowercase, NFC, emoji→text, MinHash near-dup, tokenize, lemmatize (spaCy → NLTK → regex) | `num_perm`, dedup window, tokenizer backend |
-| 3. Bot detect | `app/pipeline/stage3_bot_detect.py` | Hand-crafted features → RandomForest + heuristic score + optional DistilBERT | `reject_threshold`, `uncertain_band`, model paths |
-| 3.5. Noise filter | `app/pipeline/stage3b_noise.py` | Opinion / engagement-bait / political commentary / medical conspiracy / celebratory greetings; rejects hard, demotes borderline via `credibility_penalty` | `noise_reject_threshold` |
-| 4. Relevance | `app/pipeline/stage4_relevance.py` | Sentence-transformers embedding + cosine to news centroid; burst detection; quality score (length, media, engagement) | `relevance_threshold`, `burst_window_seconds`, `burst_min_count` |
-| 5. Credibility | `app/pipeline/stage5_credibility.py` | Whitelisted domains, source verification, propagation (burst), account age | `whitelist`, `blacklist`, `known_handles`, `high_t` / `medium_t` |
+| # | Stage | Module | What it does | Tunable |
+|---|---|---|---|---|
+| 0 | **Software focus** | `stage_software_focus.py` | Bio / handle / tweet must be AI/ML or software sphere; ≥100 followers, ≥30 days old, no scam terms (giveaway/airdrop/crypto), ≥5 engagement. Loads `data/known_software_accounts.json` for the curated pass. | `software_focus_enabled`, `software_min_followers`, `software_min_account_age_days`, `software_min_engagement`, `check_scam`, `check_retweets`, `check_engagement` |
+| 1 | **API filter** | `stage1_api_filter.py` | Language, follower count, account age, hashtag/URL spam, RT/quote detection. | `min_followers`, `min_account_age_days`, `max_hashtags`, `max_urls`, `allowed_languages` |
+| 2 | **Text clean** | `stage2_text_clean.py` | Strip URLs/mentions, lowercase, NFC, emoji→text, MinHash near-dup, tokenize, lemmatize (spaCy → NLTK → regex). | `num_perm`, dedup window, tokenizer backend |
+| 3 | **Bot detection** | `stage3_bot_detect.py` | Hand-crafted features → RandomForest + heuristic score + optional DistilBERT. Ensemble: `0.5·clf + 0.3·heuristic + 0.2·bert`. Reject if `bot_score ≥ 1 - reject_threshold` (default 0.50). | `reject_threshold`, `uncertain_band`, model paths |
+| 3.5 | **Noise filter** | `stage3b_noise.py` | Opinion / engagement-bait / political commentary / medical conspiracy / celebratory greetings; rejects hard, demotes borderline via `credibility_penalty`. | `noise_reject_threshold` |
+| 4 | **Relevance** | `stage4_relevance.py` | sentence-transformers embedding (`all-MiniLM-L6-v2`) + cosine to news centroid; burst detection; quality score (length, media, engagement). | `relevance_threshold`, `burst_window_seconds`, `burst_min_count` |
+| 5 | **Credibility** | `stage5_credibility.py` | Whitelisted domains, source verification, propagation (burst), account age, **known-news-handle boost** (loaded from `data/known_news_handles.json`, +0.30). | `whitelist`, `blacklist`, `credibility_known_news_handles_path`, `high_t`, `medium_t` |
 
-Each stage:
-- implements the `Stage[I, O]` interface
-- returns `StageResult(passed, rejected, stats)`
-- logs pass / reject / elapsed time
-- is independently unit-testable
+Stage 0 is opt-in (`software_focus_enabled` setting). Stage 3.5 is between Bot and Relevance
+because noise is a different signal than bot probability — humans can be noisy too.
+
+The `Pipeline` orchestrator wires Stages 0 → 5 in order, then applies a surface floor
+(`surface_min_credibility` = `medium` by default — both HIGH and MEDIUM items show).
 
 ---
 
-## The data model
+## Self-sustaining feed
+
+Once started, the system keeps itself populated. Three background tasks share the FastAPI
+lifespan (in `app/main.py`):
 
 ```python
-RawTweet        # raw API output
-   ↓
-CleanedTweet    # normalized text + tokens + MinHash
-   ↓            # stages 3,4 add bot_score, relevance, quality
-ScoredTweet     # stage 5 adds credibility, final_score
-   ↓
-NewsCard        # lean DTO for the frontend
-ReviewItem      # queued for human review
+async def lifespan(app: FastAPI):
+    push_task     = asyncio.create_task(_ws_pusher())
+    autoseed_task = asyncio.create_task(_mock_autoseed_task())  # if mock_auto_seed_enabled
+    real_task     = asyncio.create_task(_real_ingest_task())    # if real_ingest_enabled
+    try: yield
+    finally: cancel all three
 ```
 
-Pydantic schemas in `app/models/schemas.py`, SQLAlchemy ORM in `app/models/db_models.py`.
+### `_mock_autoseed_task` (kiosk mode — no credits required)
+
+Every 60s, check the surfaced feed count. If below `MOCK_AUTO_SEED_MIN_FEED_SIZE` (3),
+run `_run_mock_ingest(n=15)`. The check uses the *same filter as the feed endpoint*
+(`passed_all_stages=True AND credibility_score >= min_credibility`) so the count reflects
+what's actually visible. Otherwise the autoseed skips.
+
+### `_real_ingest_task` (twitterapi.io — needs credits)
+
+Every 5 min, cycle through the curated queries:
+
+```python
+for q in s.real_ingest_queries:           # ["ai_news", "china_ai", "tech"]
+    n = await _ingest_real_to_db(q, ...)   # API → pipeline → DB upsert
+    persisted += n
+    await asyncio.sleep(s.real_ingest_query_delay_seconds)  # 7s QPS gap
+```
+
+The 7-second gap is because twitterapi.io's free tier caps at **1 request every 5
+seconds**. On `TwitterAPIError` (402/429/5xx), the poller backs off for the rest of the
+cycle. There's also a per-cycle `max_persist_per_cycle` (30) to bound credit use.
+
+### Curated query beats (`app/services/twitter_client.py`)
+
+| Beat | Query | What it catches |
+|---|---|---|
+| `ai_news` | `(OpenAI OR Anthropic OR "Claude" OR "GPT" OR "Meta AI" OR "Google DeepMind" OR Mistral OR "Hugging Face" OR NVIDIA OR PyTorch OR "image generation" OR "video model") lang:en min_faves:3` | Model releases, lab announcements. *Catches the Meta Muse story.* |
+| `china_ai` | `("DeepSeek" OR "Qwen" OR "ERNIE" OR "Pangu" OR "HunYuan" OR "Hunyuan" OR "Baichuan" OR "GLM" OR "ChatGLM" OR "kimi" OR "Moonshot" OR "Zhipu" OR "AI model" OR "AI act" OR "AI ban" OR "AI export" OR "AI policy" OR "AI regulation") (China OR Chinese OR Alibaba OR Baidu OR Tencent OR Huawei OR "state council" OR Beijing OR Shanghai) lang:en min_faves:3` | Chinese AI labs + policy + export controls. *Catches the Anthropic export-controls lift + China AI policy.* |
+| `tech` | `(AI OR "machine learning" OR OpenAI OR Anthropic OR NVIDIA OR PyTorch OR kubernetes OR rustlang OR React) lang:en min_faves:5` | General tech/software news. |
+| `breaking` / `world` / `finance` / `science` | Multi-keyword topical ORs | Available beats, not currently polled (credit-conservative). |
+
+**Why multi-keyword queries?** Empirically: a single-word query like `breaking` returns 0
+tweets from twitterapi.io. `AI OR "machine learning" OR OpenAI OR ...` returns 15-30. The
+broader front door lets the downstream pipeline apply its 9-stage noise filter and surface
+the same 2-5 high-quality items.
+
+**Why `min_faves:N` at the API level?** Cheapest place to filter is before the data ever
+reaches our pipeline. One served tweet with 50 likes is worth more than 50 served tweets
+with 0 likes (and the latter is most of what twitterapi.io returns without the filter).
 
 ---
 
-## Human-in-the-loop review
+## The "no BS" defense — 10 filtering layers
 
-The active-learning loop is the heart of the system:
+The end-to-end funnel applies noise filtering at every layer; each catches what the
+previous missed:
 
-1. **Selection.** After each pipeline run, the orchestrator pushes borderline items to the
-   review queue:
-   - Bot scores in the **0.55–0.95** band (uncertain but probably one or the other)
-   - Tweets rejected by credibility but with **relevance ≥ 0.6** (false-negatives we may
-     want to rescue)
-   - All items with `bot_label = UNCERTAIN` that pass other stages
+| # | Layer | What it kills | Where |
+|---|---|---|---|
+| 0 | **API-level operators** | low-engagement noise, off-topic | `min_faves:N` in the query string |
+| 1 | **Query keywords** | off-topic garbage | multi-keyword ORs (above) |
+| 2 | **Stage 0** — software focus | non-software tweets | `stage_software_focus.py` |
+| 3 | **Stage 1** — API filter | spam-link dumps, gibberish | `stage1_api_filter.py` |
+| 4 | **Stage 2** — text clean + MinHash dedup | near-duplicates within a batch | `stage2_text_clean.py` |
+| 5 | **Stage 3** — bot detection | spam bots | `stage3_bot_detect.py` |
+| 6 | **Stage 3.5** — noise filter | opinion, engagement-bait | `stage3b_noise.py` |
+| 7 | **Stage 4** — relevance + burst | single-source claims vs. corroborated events | `stage4_relevance.py` (burst flag wired) |
+| 8 | **Stage 5** — credibility | author reputation, domain, known-news-handle boost | `stage5_credibility.py` |
+| 9 | **Surface floor** | everything below MEDIUM credibility | `surface_min_credibility` setting |
 
-2. **Prioritisation.** `uncertainty_margin = 1 - 2·|p - 0.5|` averaged across bot and
-   credibility. The review queue is sorted by uncertainty descending — humans see the
-   most informative items first.
+Cumulative effect: ~100 raw tweets → ~5 surfaced. Each layer costs almost nothing
+(a regex match or a numeric comparison). Widening layer 1 (queries) without changing
+layers 2-9 produces noisy output; trust the layers.
 
-3. **Labelling.** The `/review` UI offers Approve (human) / Reject (bot/spam) plus a
-   category tag (breaking / world / tech / finance / science / …) and free-form notes.
+---
 
-4. **Retraining.** `POST /api/ml/retrain` (or nightly Celery beat) pulls all labelled
-   reviews, optionally augments with the seed dataset, retrains the RandomForest, evaluates
-   on a stratified holdout, and records `precision`, `recall`, `f1` to the
-   `model_metrics` table — surfaced in the **Metrics** tab.
+## Human-in-the-loop active learning
 
-5. **Diversity sampling.** `app/ml/active_learning.py:diversity_sample` does k-means++
-   over the embedded tweets so that retraining data isn't dominated by one cluster.
+```
+1. Pipeline runs → borderline tweets queued to Review queue
+   - bot scores in 0.55-0.95 band
+   - tweets rejected by credibility but with relevance ≥ 0.6
+   - all items with bot_label = UNCERTAIN
+
+2. UI shows uncertain items first (uncertainty_margin = 1 - 2·|p - 0.5|)
+
+3. You label them: approved / rejected / needs_more_info + category + notes
+
+4. POST /api/ml/retrain (or nightly Celery beat):
+   - pulls all labelled reviews
+   - retrains the RandomForest bot classifier
+   - records precision / recall / F1 to model_metrics table
+
+5. Next pipeline run uses the smarter model
+```
+
+The bot classifie is retrained with whatever bootstrap data is in
+`app/ml/train_bot.py` plus all labelled reviews. Diversity sampling
+(`active_learning.diversity_sample`) keeps the retraining data from being dominated
+by one cluster — k-means++ over embedded reviews.
+
+---
+
+## Dashboard
+
+Open `http://localhost:8000/`. Three tabs:
+
+- **Feed** — cards ranked by `final_score` (composite of credibility + relevance +
+  quality + inverse bot). Each card shows the author, headline, summary, media grid,
+  credibility badge, **why_shown** chips (`verified_account`, `known_news_handle`,
+  `low_bot_probability`, `domain_whitelisted`, `co_corroborated_burst`, `trending_now`),
+  "View on X" link.
+- **Review queue** — side-by-side model prediction bars (bot, credibility, relevance) +
+  uncertainty margin + reasons on the left, raw tweet + category dropdown + notes on the
+  right. Approve / Reject / Needs more info buttons. **Retrain** button at the top.
+- **Metrics** — per-model metric history (F1, precision, recall) with version + sample size.
+  Ready for recharts/d3 wiring via the `/api/ml/metrics` JSON endpoint.
+
+Sidebar shows live pipeline counts (`/api/stats`), a beat launcher for one-shot ingests,
+and the "why this is clean" explainer.
 
 ---
 
@@ -194,128 +244,136 @@ The active-learning loop is the heart of the system:
 | GET  | `/api/health` | Liveness probe |
 | GET  | `/api/feed?limit&min_credibility&handle` | Paginated news cards |
 | GET  | `/api/feed/card/{id}` | Single card |
-| POST | `/api/ingest` | Run the real API + pipeline (`{"beat":"breaking"}` or `{"query":"…"}`) |
-| POST | `/api/ingest/mock?n=30&seed=42` | Synthetic pipeline run |
-| GET  | `/api/stats` | Pipeline aggregates |
+| POST | `/api/ingest` | Real API + pipeline (`{"query":"..."}` or `{"beat":"ai_news"}`). `poll=true` starts a background loop. |
+| POST | `/api/ingest/mock?n=15&seed=42` | Synthetic pipeline run (no credits needed) |
+| GET  | `/api/stats` | Pipeline aggregates + last-run stats |
 | GET  | `/api/review/queue?limit=25` | Unlabeled items, sorted by uncertainty |
 | POST | `/api/review/{id}/label` | `{label, category, notes, labeler_id}` |
 | GET  | `/api/review/stats` | Counts of labeled/unlabeled/approved/rejected |
 | GET  | `/api/ml/metrics` | Recent metric history per model |
-| POST | `/api/ml/retrain` | Trigger a retraining pass |
-| WS   | `/ws` | Real-time feed updates (10s tick) |
-
-Open `http://localhost:8000/docs` for the interactive Swagger UI.
-
----
-
-## Dashboard
-
-- **Header.** Logo, tab switcher (Feed / Review / Metrics), version chip.
-- **Feed tab.** Filters (min credibility, handle, refresh), inline ingest buttons. Each card
-  shows avatar (initials fallback), handle, ✓ verified badge, headline, summary, media grid,
-  color-coded **credibility badge** with the model score, "why shown" chips
-  (Trending now / Verified account / Trusted source / Corroborated), and a "View on X" link.
-- **Review queue tab.** Side-by-side: model prediction bars (bot, credibility, relevance) +
-  uncertainty margin + reasons on the left, raw tweet + category dropdown + notes on the
-  right. Approve/Reject buttons. **Retrain** button at the top.
-- **Metrics tab.** Per-model metric history (F1, precision, recall) with version + sample
-  size. Renders as a compact table; the wire includes a `/ml/metrics` JSON endpoint ready for
-  charting libraries.
-- **Sidebar.** Live pipeline counts, beat launcher (breaking / world / tech / markets /
-  science), "why this is clean" explainer.
+| POST | `/api/ml/retrain` | Trigger retrain pass |
+| WS   | `/ws` | Real-time feed updates |
+| GET  | `/docs` | Swagger UI |
 
 ---
 
-## Tech choices and trade-offs
+## Tech choices and the trade-offs
 
 | Decision | Rationale |
 |---|---|
-| **FastAPI** | Async-native, OpenAPI for free, easy WebSocket support |
-| **SQLite default / Postgres prod** | Zero-setup local; switch via `DATABASE_URL` |
-| **scikit-learn RandomForest** | CPU-friendly, fast retrain, decent baseline, easy to swap |
-| **DistilBERT (optional)** | Stronger bot detection, ~250 MB; lazy-loaded so 1.6 GB RAM boxes still work |
-| **sentence-transformers all-MiniLM-L6-v2** | 80 MB, great quality/size ratio for the relevance centroid |
-| **MinHash** | O(n) near-dup detection on streaming input — no O(n²) comparisons |
-| **Celery** | Production retraining; in dev we use `BackgroundTasks` |
-| **SWR** | Polling + cache + revalidation; drops in easily to WebSocket later |
-| **Tailwind + lucide-react** | Fast iteration, consistent look, dark-by-default |
-| **Mock auto-seed (kiosk mode)** | Background task that tops the feed up with synthetic tweets whenever the surfaced count drops below `MOCK_AUTO_SEED_MIN_FEED_SIZE`, so the demo dashboard stays populated without manual clicks. Disable via `MOCK_AUTO_SEED_ENABLED=false`. |
+| **FastAPI** | Async-native, OpenAPI for free, easy WebSocket support, lifespan context manager for the background-task pattern. |
+| **SQLite default / Postgres prod** | Zero-setup local; switch via `DATABASE_URL=postgresql://...`. Single-connection lock doesn't matter at this scale. |
+| **scikit-learn RandomForest** | CPU-friendly, fast retrain, decent baseline, easy to swap. The seed dataset is synthetic so F1 is ~0.5; retrain-on-labels is what makes it better. |
+| **DistilBERT (optional)** | Stronger bot detection, ~250 MB. Lazy-loaded so 1.6 GB RAM boxes still work. Default: not loaded. |
+| **sentence-transformers `all-MiniLM-L6-v2`** | 80 MB embedding model, great quality/size ratio for the relevance centroid. |
+| **MinHash dedup** | O(n) near-dup detection on streaming input. No O(n²) comparisons. Disabled if `datasketch` isn't installed (warning logged). |
+| **Celery for retraining** | Production-scale; `BackgroundTasks` in dev is enough. |
+| **SWR** | Polling + cache + revalidation; replaces well with WebSocket later. |
+| **TwitterAPI.io (not X direct)** | Easier signup than waiting for X API approval. Caveats: free tier caps at 1 request / 5 seconds, credits expire. The two background tasks are independently tunable so you can disable real-ingest without losing the mock autoseed. |
+| **Multi-keyword curated queries** | Empirically single-word queries (`breaking`, `world`) return 0 tweets. Multi-keyword ORs return 15-30. The downstream pipeline still filters aggressively. |
+| **`min_faves:N` at API layer** | Cheapest place to filter. Drops low-engagement noise before we ever see it. |
+| **Known-news-handle boost (JSON, not hardcoded)** | Editors curate `data/known_news_handles.json` without code changes. Bumped +0.2 → +0.30 because Muse from @AIatMeta was originally at MEDIUM credibility despite being a known account. |
+| **Stage 0 as opt-in topic gate** | Keeps general-news ingest possible (`software_focus_enabled=False`) while defaulting to AI/ML + software. |
+| **Stage 3.5 (noise filter) separate from Stage 3 (bot)** | Humans can be noisy too. Opinion + engagement-bait ≠ bot. |
+| **Stage 4 burst detection** | When 3+ similar tweets cluster in 5 min, the corroboration lifts credibility slightly (corroborated events > single-source claims). |
+| **Kiosk-mode mock autoseed** | When credits are out, the feed still has *something* on the dashboard. The check uses the same filter as `/api/feed` so "healthy" matches what's actually visible. |
+| **Two background tasks for ingest (mock + real)** | Independently tunable intervals and enables. Real-ingest can be disabled in prod (paid-plan-only) without losing the mock fallback. |
+| **QPS-aware delay between beats** | TwitterAPI.io's free tier is 1 req / 5 sec. 7-second gap gives margin. |
+| **`Pipeline` constructor injects per-stage config** | Tests can swap in a `SoftwareFocusFilter(known_accounts_path=tmp)` without touching global settings. |
+| **Settings loaded via pydantic-settings** | 12-factor: env vars override `.env` override code defaults. |
 
 ---
 
-## Implementation roadmap
+## Quick start
 
-### MVP (✅ done)
-- 6-stage pipeline with mock data (Stage 0 software-focus + Stages 1–5 + Stage 3.5 noise filter)
-- All 6 stages execute end-to-end on synthetic and real (paid) data
-- FastAPI with full REST surface
-- SQLite persistence
-- Next.js dashboard with Feed / Review / Metrics tabs
-- Active-learning selection + label endpoint
-- Initial bot-classifier training script
-- Retraining pipeline that ingests human labels
+```bash
+git clone https://github.com/krish191204/CleanND1.git
+cd CleanND1/backend
+pip install --break-system-packages -r requirements.txt
 
-### v1
-- Train a DistilBERT bot classifier on a real labelled dataset
-- Postgres migration + Alembic
-- Auth (reviewers only)
-- Per-user label history & agreement stats
-- Better burst detection (HASHED MinHash clustering → event IDs)
-- A/B different credibility weights in the UI
+# Copy the env template, set your twitterapi.io key
+cp .env.example .env
+# edit .env: TWITTER_API_KEY=your_key (the dev key in this repo is gitignored)
 
-### v2
-- Multi-source ingestion (Mastodon, Bluesky, RSS, Reddit)
-- Claim-level extraction + LLM-assisted fact-check overlay
-- Topic-aware retrieval (dense + BM25 hybrid) for "related coverage"
-- Personalization with on-device preference vectors
-- Trust graph: per-source reliability over time
+# Train the initial bot classifier (uses synthetic seed data)
+python -m scripts.train_initial_model
 
----
+# Start the API + background tasks
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
 
-## Evaluation metrics
+Dashboard: `http://localhost:8000/`. API: `http://localhost:8000/docs`.
 
-For each model retrain we record to `model_metrics`:
+### "I want real news on the dashboard"
 
-- **Bot classifier:** precision, recall, F1, sample size, version timestamp
-- **Credibility** (future): ROC-AUC vs. human-verified labels
-- **Relevance** (future): NDCG@10 on a held-out topical set
-- **Pipeline funnel:** ingested → passed_api → passed_clean → passed_bot → passed_rel →
-  passed_cred → surfaced; review_queue depth
+The system runs `ai_news`, `china_ai`, and `tech` automatically every 5 min. To force a
+one-shot refresh:
 
-The Metrics tab shows the per-run history. Wire a charting lib (e.g. recharts) to
-`/api/ml/metrics` to plot F1 over time.
+```bash
+curl -X POST http://localhost:8000/api/ingest \
+  -H 'Content-Type: application/json' \
+  -d '{"beat":"ai_news","max_results":25}'
+```
+
+### "I don't have API credits"
+
+The mock auto-seeder runs every 60s, topping up the feed with synthetic software-sphere
+tweets. The `+15 mock` button in the dashboard does the same on-demand. The full pipeline
+(Dashboard + Review queue + Retrain) is exercisable end-to-end with mock data.
 
 ---
 
-## Continuous improvement plan
+## Files of interest
 
-1. **Daily** — review queue depth, label distribution, top reasons for bot rejection.
-2. **Weekly** — re-evaluate on a held-out human-labelled set; record drift metrics.
-3. **Nightly** — retrain bot classifier on the union of {all labels ∪ seed}; record
-   metrics; if F1 regresses > 5%, keep the previous model and alert.
-4. **On-demand** — click "Retrain" in the dashboard after a labelling sprint.
-5. **Active learning** — beyond simple uncertainty, incorporate diversity sampling
-   (`active_learning.diversity_sample`) every K labels so the model sees varied examples.
-6. **Drift detection** — track daily distributions of bot_score, credibility_score,
-   and pipeline pass rates. Page on > 2σ shifts.
-
----
-
-## API caveats & best practices
-
-- **twitterapi.io rate limits.** A 402 response with `Credits is not enough` means the
-  account is out of credits. The system surfaces the error cleanly; in production add
-  exponential backoff and a token-bucket client.
-- **X/Twitter terms of service.** Stay inside the official v2 API's `search/recent` and
-  `users/:id/tweets` endpoints for production deployments. Third-party aggregators
-  (twitterapi.io, Apify, Bright Data) are fine for prototyping but review the ToS for
-  redistribution.
-- **Privacy.** Hash or omit `author_id` from logs; rotate handles that look like PII.
-- **Credibility ≠ truth.** The pipeline is a heuristic signal, not a fact-check. Always
-  show the model's reasons, never a binary "true/false".
-- **Bot detection bias.** Heuristics + supervised models can over-fire on accounts that
-  tweet in non-English languages, that link to small personal sites, or that are simply new.
-  The human-in-the-loop queue is the safety valve — make sure reviewers are diverse.
+```
+backend/
+  app/
+    config.py                            # env loading + 30+ settings
+    main.py                              # FastAPI entrypoint + 3 background tasks
+    pipeline/
+      base.py                            # Stage[I, O] / StageResult interface
+      stage_software_focus.py            # Stage 0 — topical gate
+      stage1_api_filter.py
+      stage2_text_clean.py
+      stage3_bot_detect.py               # RF + heuristic + optional DistilBERT
+      stage3b_noise.py                   # Stage 3.5 — opinion / engagement-bait
+      stage4_relevance.py                # sentence-transformers + burst
+      stage5_credibility.py              # known-news-handle boost + domain whitelist
+      orchestrator.py                    # Pipeline.run + active-learning gate
+    services/
+      db.py                              # SQLAlchemy wrapper
+      twitter_client.py                  # twitterapi.io HTTP client + NEWS_QUERIES
+      review_queue.py                    # queue facade
+      cards.py                           # ScoredTweet → NewsCard
+    api/
+      routes.py                          # all REST endpoints + _run_mock_ingest + _ingest_real_to_db helpers
+      websocket.py                       # live feed broadcaster
+    ml/
+      features.py                        # shared feature extractor
+      train_bot.py                       # seed data + RF trainer
+      retrain.py                         # pulls labels, refits, records metrics
+      active_learning.py                 # uncertainty + diversity sampling
+      celery_app.py                      # nightly beat (prod)
+    models/
+      schemas.py                         # Pydantic contracts
+      db_models.py                       # SQLAlchemy ORM
+  data/
+    known_software_accounts.json         # Stage 0 whitelist
+    known_news_handles.json              # Stage 5 credibility boost (77 handles)
+  scripts/
+    train_initial_model.py               # bootstrap trainer
+  tests/
+    test_api.py                          # 41 passing + 1 pre-existing failure
+    test_pipeline.py
+    test_software_focus.py
+frontend/
+  app/page.tsx                           # tab container
+  components/                            # NewsCard, FeedList, ReviewQueueView, ...
+  lib/api.ts                              # typed client
+infra/
+  docker-compose.yml
+  Dockerfile.backend
+```
 
 ---
 
@@ -326,57 +384,51 @@ cd backend
 pytest -q
 ```
 
-Tests are scaffolded in `backend/tests/` — add new tests next to the code they cover.
+Current state: **41 passed, 1 pre-existing failure** in
+`test_software_focus.py::test_from_settings_classmethod` (the test assumes
+`get_settings.cache_clear()` lets mutated settings propagate, but Pydantic-settings
+re-reads from `.env` on cache-clear — fix in a separate pass).
 
 ---
 
-## Files of interest
+## What's running right now
 
-```
-backend/
-  app/
-    config.py                 # env loading
-    main.py                   # FastAPI entrypoint + WS + static frontend
-    pipeline/
-      base.py                 # Stage[T] / StageResult
-      stage_software_focus.py # Stage 0: AI/ML + SW-sphere gate
-      stage1_api_filter.py
-      stage2_text_clean.py
-      stage3_bot_detect.py
-      stage3b_noise.py        # Stage 3.5: opinion / engagement-bait
-      stage4_relevance.py
-      stage5_credibility.py
-      orchestrator.py         # Pipeline.run + active-learning gate
-    services/
-      db.py                   # SQLAlchemy wrapper
-      twitter_client.py       # twitterapi.io HTTP client
-      review_queue.py         # queue facade
-      cards.py                # ScoredTweet -> NewsCard
-    api/
-      routes.py               # all REST endpoints
-      websocket.py            # live feed broadcaster
-    ml/
-      features.py             # shared feature extractor
-      train_bot.py            # seed data + RF trainer
-      retrain.py              # pulls labels, refits, records metrics
-      active_learning.py      # uncertainty + diversity sampling
-      celery_app.py           # nightly beat (prod)
-    models/
-      schemas.py              # Pydantic contracts
-      db_models.py            # SQLAlchemy ORM
-  scripts/
-    train_initial_model.py    # bootstrap entry point
-frontend/
-  app/page.tsx                # tab container
-  components/                 # NewsCard, FeedList, ReviewQueueView, ...
-  lib/api.ts                  # typed client
-```
+| Component | State |
+|---|---|
+| Backend | uvicorn on `:8000` (PID `ba4xktbrm`) |
+| Mock auto-seed | running (60s interval, feed is healthy so skipping) |
+| Real-ingest poller | running (5 min interval, 7s QPS gap, 3 beats) |
+| API key | twitterapi.io free-tier (`new1_4bea...d455`) — 1 req / 5 sec |
+| Feed | ~60 real-news items: Muse, GPT-5.6 Sol, gpt-live, robostral, Grok 4.5, AnthropicAI export-controls, etc. |
+| Review queue | thousands of borderline items (active-learning accumulators) |
 
 ---
 
-## License & disclaimer
+## Roadmap
 
-This is a research/educational system. The credibility scores are **heuristic signals**, not
-factual assessments. Do not use as a sole basis for editorial decisions. The dashboard is
-designed to **show its work** — every card exposes the model's reasons, and every blocked
-item is recoverable through the human review queue.
+### MVP (✅ done)
+- 6-stage pipeline (Stage 0 software-focus + Stages 1-5 + Stage 3.5 noise filter)
+- Real + mock ingest (HTTP endpoint + background poller + mock auto-seeder)
+- FastAPI with full REST surface
+- SQLite persistence, Next.js dashboard (Feed / Review / Metrics tabs)
+- Active-learning selection + label endpoint
+- Initial bot-classifier training script (bootstrap F1 ~0.5)
+- Retraining pipeline that ingests human labels
+- Curated queries for `ai_news`, `china_ai`, `tech`, plus `breaking`/`world`/`finance`/`science`
+- Known-news-handle whitelist (77 handles, +0.30 credibility boost)
+- Background poller with QPS-aware delays and per-cycle flood guard
+
+### v1
+- Train the DistilBERT bot classifier on a labelled real-world corpus (currently disabled by default to save memory)
+- Postgres + Alembic migration
+- Auth (reviewers only)
+- Per-user label history & agreement stats
+- Burst-driven query expansion: when many tweets cluster on a topic, auto-poll for more on that topic
+- Better MinHash dedup (hashed clustering → event IDs)
+
+### v2
+- Multi-source ingestion (Mastodon, Bluesky, RSS, Reddit)
+- Claim-level extraction + LLM-assisted fact-check overlay
+- Topic-aware retrieval (dense + BM25 hybrid) for "related coverage"
+- Personalization with on-device preference vectors
+- Trust graph: per-source reliability over time
