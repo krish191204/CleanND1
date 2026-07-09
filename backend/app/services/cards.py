@@ -52,6 +52,7 @@ def to_card(st: ScoredTweet, human_verified: bool = False) -> NewsCard:
         human_verified=human_verified,
         why_shown=why,
         url=url,
+        topic_id=st.cluster_id,
     )
 
 
