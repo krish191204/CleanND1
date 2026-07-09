@@ -250,12 +250,20 @@ NEWS_QUERIES = {
         "\"EU AI\" OR \"export controls\") "
         "lang:en min_faves:3"
     ),
-    # New: China AI / Huawei / Baidu / DeepSeek / etc. — catches the
-    # "China bans foreign AI models" story and related policy moves.
+    # New: China AI lab announcements + policy moves (DeepSeek, Qwen,
+    # ERNIE, Pangu, HunYuan, ChatGLM, Moonshot/Kimi, etc.). Tuned for
+    # software-sphere handles so Stage 0 lets them through. The generic
+    # "China AI" query returns 20+ geopolitical headlines that all get
+    # rejected at Stage 0 — we want model releases and policy that
+    # touches actual software products.
     "china_ai": (
-        "(China OR Chinese OR Huawei OR Baidu OR DeepSeek OR Alibaba OR "
-        "\"Tencent\" OR \"Baidu\" OR \"state council\" OR \"MIIT\" OR "
-        "\"CAC\") (AI OR \"artificial intelligence\" OR model OR LLM) "
+        "(\"DeepSeek\" OR \"Qwen\" OR \"ERNIE\" OR \"Pangu\" OR "
+        "\"HunYuan\" OR \"Hunyuan\" OR \"Baichuan\" OR \"GLM\" OR "
+        "\"ChatGLM\" OR \"kimi\" OR \"Moonshot\" OR \"Zhipu\" OR "
+        "\"AI model\" OR \"AI act\" OR \"AI ban\" OR \"AI export\" OR "
+        "\"AI policy\" OR \"AI regulation\") "
+        "(China OR Chinese OR Alibaba OR Baidu OR Tencent OR Huawei "
+        "OR \"state council\" OR Beijing OR Shanghai) "
         "lang:en min_faves:3"
     ),
     "verified_only": "lang:en filter:verified",

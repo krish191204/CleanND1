@@ -178,6 +178,9 @@ async def _real_ingest_task() -> None:
                         break
                 except Exception as e:  # pragma: no cover — defensive
                     logger.warning(f"[real-ingest] beat={q!r} failed: {e}")
+                # Pause between beats so we don't trip twitterapi.io's free-tier
+                # QPS limit (returns 429 'Too Many Requests').
+                await asyncio.sleep(s.real_ingest_query_delay_seconds)
             logger.info(f"[real-ingest] cycle done — total persisted={persisted}")
         except asyncio.CancelledError:
             raise

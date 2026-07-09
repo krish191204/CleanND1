@@ -95,11 +95,12 @@ class Settings(BaseSettings):
     real_ingest_enabled: bool = True
     real_ingest_interval_seconds: float = 600.0       # 10 min — credit-conscious
     real_ingest_initial_delay_seconds: float = 5.0
+    real_ingest_query_delay_seconds: float = 7.0       # twitterapi.io free-tier caps at 1 request / 5 sec; 7s leaves a safety margin
     real_ingest_queries: list[str] = [
         "ai_news", "china_ai", "tech",
     ]
     real_ingest_max_per_query: int = 25
-    real_ingest_max_persist_per_cycle: int = 50      # flood guard
+    real_ingest_max_persist_per_cycle: int = 30      # flood guard — lowered because free-tier QPS limits cap how many calls per cycle succeed
     # On TwitterAPIError or credits-exhausted 402, skip the rest of this
     # cycle and try again after one full interval (don't retry-storm).
     real_ingest_error_backoff: bool = True
