@@ -254,10 +254,11 @@ def test_upsert_tweet_is_mock_defaults_false(tmp_path):
 # good tweets. The error must be visible.
 # ---------------------------------------------------------------------
 
-def test_find_dup_logs_on_jaccard_failure(monkeypatch, caplog):
+def test_find_dup_logs_on_jaccard_failure():
     """When jaccard() raises inside _find_dup, the exception must be
-    logged so operators can see it — not silently swallowed."""
-    import logging
+    caught AND logged so operators can see it — not silently swallowed
+    and not propagated up to the caller."""
+    from loguru import logger
     from app.pipeline.stage2_text_clean import TextCleaner
 
     cleaner = TextCleaner(compute_minhash=True, num_perm=16)
@@ -277,17 +278,30 @@ def test_find_dup_logs_on_jaccard_failure(monkeypatch, caplog):
         def jaccard(self, other):
             raise RuntimeError("simulated jaccard failure")
 
-    with caplog.at_level(logging.WARNING):
-        result = cleaner._find_dup(BrokenMinHash())
+    # Capture loguru output by adding a temporary sink.
+    captured = []
 
-    # Currently returns None silently (no log). After fix: logs an
-    # exception/warning so the failure is visible.
-    assert result is None
+    def sink(message):
+        captured.append(str(message))
+
+    handler_id = logger.add(sink, level="ERROR")
+    try:
+        # Must not raise — the fix catches and logs the exception.
+        result = cleaner._find_dup(BrokenMinHash())
+        assert result is None, (
+            "expected _find_dup to fail-open to None when jaccard() raises"
+        )
+    finally:
+        logger.remove(handler_id)
+
+    # And the failure must be visible to operators via the traceback log.
     assert any(
-        "jaccard" in record.getMessage().lower()
-        or "find_dup" in record.getMessage().lower()
-        for record in caplog.records
-    ), "expected _find_dup to log when jaccard() raises"
+        "jaccard" in msg.lower() and "simulated jaccard failure" in msg.lower()
+        for msg in captured
+    ), f"expected _find_dup to log the failure; got: {captured}"
+    assert any(
+        "find_dup" in msg.lower() for msg in captured
+    ), f"expected log message to mention find_dup; got: {captured}"
 
 
 def _mk_cleaned_stub() -> CleanedTweet:

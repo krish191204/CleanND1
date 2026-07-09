@@ -252,5 +252,10 @@ class TextCleaner(Stage[RawTweet, CleanedTweet]):
                 if j >= threshold:
                     return float(j), original
             return None
-        except Exception:  # pragma: no cover
+        except Exception:  # Sub-agent B Bug C: previously this silently
+            # swallowed MinHash errors (e.g. scheme mismatches after a
+            # datasketch upgrade). Fail-open treats the tweet as a
+            # non-duplicate — better than dropping a good tweet — but
+            # log the full traceback so the failure is visible.
+            logger.exception("TextCleaner._find_dup: jaccard() raised")
             return None
