@@ -20,7 +20,6 @@ export interface NewsCard {
   url: string;
   tweet_type: TweetType;
   topic_id?: string | null;
-  is_clustered: boolean;
 }
 
 export interface CardListResponse {

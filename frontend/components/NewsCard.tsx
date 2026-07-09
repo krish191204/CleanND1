@@ -4,7 +4,7 @@ import { NewsCard as NewsCardT } from '@/lib/api';
 import { CredibilityBadge } from './CredibilityBadge';
 import { FeedbackButtons } from './FeedbackButtons';
 import { relTime } from '@/lib/utils';
-import { ExternalLink, Sparkles, AlertTriangle, MessageCircle } from 'lucide-react';
+import { ExternalLink, Sparkles } from 'lucide-react';
 
 const WHY_LABEL: Record<string, string> = {
   trending_now: 'Trending now',
@@ -12,17 +12,6 @@ const WHY_LABEL: Record<string, string> = {
   verified_account: 'Verified account',
   domain_whitelisted: 'Trusted source',
   co_corroborated_burst: 'Corroborated',
-};
-
-// Layer B Addition 1: when a tweet was NOT clustered into any topic,
-// surface a 'single source' warning. The dashboard may have hundreds
-// of these alongside a few tight clusters — the user needs to know
-// the singleton isn't corroborated.
-const TYPE_LABEL: Record<string, string> = {
-  announcement: 'Announcement',
-  opinion: 'Opinion',
-  news_report: 'Report',
-  analysis: 'Analysis',
 };
 
 export function NewsCardItem({
@@ -85,24 +74,6 @@ export function NewsCardItem({
                 score={card.credibility_score}
                 humanVerified={card.human_verified}
               />
-              {card.tweet_type && card.tweet_type !== 'unknown' && (
-                <span
-                  className="chip bg-ink-800 text-ink-200 border border-ink-600"
-                  title={`Heuristic tweet type: ${TYPE_LABEL[card.tweet_type] || card.tweet_type}`}
-                >
-                  <MessageCircle size={10} />
-                  {TYPE_LABEL[card.tweet_type] || card.tweet_type}
-                </span>
-              )}
-              {card.is_clustered === false && (
-                <span
-                  className="chip bg-cred-low/15 text-cred-low border border-cred-low/40"
-                  title="This tweet was not grouped with any other tweet. Treat with caution — single source, no corroboration from the topic clustering pass."
-                >
-                  <AlertTriangle size={10} />
-                  Single source
-                </span>
-              )}
               {card.why_shown?.map((w) => (
                 <span
                   key={w}
