@@ -132,7 +132,23 @@ class TextCleaner(Stage[RawTweet, CleanedTweet]):
             try:
                 ct = self._clean(tw)
             except Exception as e:
-                logger.warning(f"text_clean failed for {tw.id}: {e}")
+                # Sub-agent B Bug A: previously the tweet vanished here
+                # — passed+rejected stayed < input. Now log the traceback
+                # and append a stub CleanedTweet to `rejected` with a
+                # `processing_failed:<exc-class>` reason so the caller
+                # can audit / retry. We need a CleanedTweet-shaped stub
+                # so the StageResult shape stays consistent.
+                logger.exception(f"text_clean failed for {tw.id}")
+                stub = CleanedTweet(
+                    raw=tw,
+                    clean_text="",
+                    tokens=[],
+                    lemmas=[],
+                    language=tw.lang or "und",
+                )
+                rejected.append(
+                    (stub, f"processing_failed:{type(e).__name__}:{e}")
+                )
                 continue
 
             if len(ct.tokens) < 5:
