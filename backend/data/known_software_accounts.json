@@ -32,9 +32,12 @@
     "tj", "addyosmani", "mjackson", "kentcdodds",
     "swyx", "mxstbr", "tannerlinsley", "evan_you", "sindresorhus",
     "iamdevloper", "tholman", "sdras", "wesbos",
-    "kettanaito", "mxschmidt", "mohammadalashkar"
+    "kettanaito", "mxschmidt", "mohammadalashkar",
+    "ada_codes", "kestrel_dev", "mira_open", "soren_mlops", "jie_l"
   ],
   "organizations": [
+    "fable_ai", "mineral_lab", "ledger_models", "emberstack", "polycli",
+    "northwave_dl",
     "openai", "anthropicai", "googledeepmind", "huggingface",
     "metaai", "nvidia", "deepmind", "mlopscommunity",
     "weights_biases", "mlfoundations",
