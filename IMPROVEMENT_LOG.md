@@ -28,6 +28,6 @@ unrelated to any of this work).
 | Agent | Iteration | Problem | Fix | Metric before → after |
 |-------|-----------|---------|-----|----------------------|
 | prep  | bb70643  | NewsCard `topic_id` was implicit None | Wire `topic_id=st.cluster_id` in to_card() | baseline locked at 60 passed |
-| (awaiting sub-agent A) | | | | |
+| A | iter-1 | `cards.to_card()`, `credibility_color()`, `stage3b_noise.credibility_penalty()`, `stage5_credibility._host_of()` / `_load_known_news_handles()`, and `Pipeline._uncertainty_margin()` had no direct unit tests — regressions could silently break the dashboard headline/URL/why_shown mapping, the burst badge, or the noise-penalty tier logic | Added 10 tests in `backend/tests/test_coverage_a.py`: topic_id propagation, headline sentence-split, status-URL fallback, burst_in_why_shown, credibility_color mapping (4 levels), 4-tier penalty boundaries, www-prefix/lowercase URL parsing, comment-key JSON skip, missing-file fallback, max-margin-at-(0.5, 0.5) | 60 passed → 70 passed (+10) |
 | (awaiting sub-agent B) | | | | |
 | (awaiting sub-agent C) | | | | |
